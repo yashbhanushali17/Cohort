@@ -1,47 +1,34 @@
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const backendRoot = path.resolve(__dirname, '..', '..');
-const uploadDir = path.join(backendRoot, 'uploads');
-
-// Ensure uploads directory exists
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-    destination(req, file, cb) {
-        cb(null, uploadDir);
-    },
-    filename(req, file, cb) {
-        cb(
-            null,
-            `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`
-        );
-    },
-});
 
 function checkFileType(file, cb) {
-    const filetypes = /jpg|jpeg|png/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
+    const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.avif', '.bmp']);
+    const allowedMimeTypes = new Set([
+        'image/jpg',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/svg+xml',
+        'image/avif',
+        'image/bmp'
+    ]);
+    const extname = allowedExtensions.has(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedMimeTypes.has((file.mimetype || '').toLowerCase());
 
     if (extname && mimetype) {
         return cb(null, true);
     } else {
-        cb(new Error('Images only!'));
+        cb(new Error('Please upload a JPG, PNG, GIF, WebP, SVG, AVIF, or BMP image.'));
     }
 }
 
 const upload = multer({
-    storage,
+    storage: multer.memoryStorage(),
     fileFilter: function (req, file, cb) {
         checkFileType(file, cb);
     },
+    limits: { fileSize: 10 * 1024 * 1024 }
 });
 
 export default upload;

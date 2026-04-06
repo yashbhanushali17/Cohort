@@ -1,11 +1,17 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import protect from '../middleware/auth-middleware.js';
 import User from '../models/user-model.js';
 import upload from '../middleware/upload-middleware.js';
+import { emitToUserRooms, getDistinctIds } from '../utils/realtime.js';
+import { deleteMediaByUrl, saveUploadAsMedia } from '../utils/media.js';
 
 const router = express.Router();
+const PUBLIC_PROFILE_SELECT = 'name username profilePic bio interests whoAmI aboutInfo education friends';
+const LIST_USER_SELECT = 'name username email profilePic bio whoAmI aboutInfo education interests';
 
 const getRelationshipStatus = (currentUser, targetUserId) => {
+  if (!currentUser) return 'none';
   const id = targetUserId.toString();
   if ((currentUser.friends || []).some((friendId) => friendId.toString() === id)) {
     return 'friend';
@@ -19,6 +25,21 @@ const getRelationshipStatus = (currentUser, targetUserId) => {
   return 'none';
 };
 
+const toPublicProfile = (user, currentUser) => ({
+  id: user._id,
+  _id: user._id,
+  name: user.name,
+  username: user.username,
+  bio: user.bio,
+  profilePic: user.profilePic,
+  interests: user.interests || [],
+  whoAmI: user.whoAmI || '',
+  aboutInfo: user.aboutInfo || '',
+  education: user.education || '',
+  friendsCount: (user.friends || []).length,
+  relationship: currentUser ? getRelationshipStatus(currentUser, user._id) : 'none'
+});
+
 // GET /api/user/profile
 router.get('/profile', protect, async (req, res) => {
   try {
@@ -30,6 +51,7 @@ router.get('/profile', protect, async (req, res) => {
     res.json({
       user: {
         id: user._id,
+        _id: user._id,
         name: user.name,
         username: user.username,
         email: user.email,
@@ -81,7 +103,19 @@ router.put('/profile', protect, upload.single('profilePic'), async (req, res) =>
     }
 
     if (req.file) {
-      user.profilePic = `/uploads/${req.file.filename}`;
+      const previousProfilePic = user.profilePic;
+      const storedMedia = await saveUploadAsMedia({
+        file: req.file,
+        ownerId: user._id,
+        category: 'profiles'
+      });
+      user.profilePic = storedMedia.url;
+
+      if (previousProfilePic && previousProfilePic !== storedMedia.url) {
+        deleteMediaByUrl(previousProfilePic).catch((error) => {
+          console.error(`Failed to delete previous profile media for user ${user._id}:`, error.message);
+        });
+      }
     }
 
     if (req.body.password) {
@@ -90,8 +124,18 @@ router.put('/profile', protect, upload.single('profilePic'), async (req, res) =>
 
     const updatedUser = await user.save();
 
+    emitToUserRooms({
+      req,
+      userIds: getDistinctIds([updatedUser._id, ...(updatedUser.friends || [])]),
+      payload: {
+        resource: 'profile',
+        userId: updatedUser._id.toString()
+      }
+    });
+
     res.json({
       id: updatedUser._id,
+      _id: updatedUser._id,
       name: updatedUser.name,
       username: updatedUser.username,
       email: updatedUser.email,
@@ -101,7 +145,8 @@ router.put('/profile', protect, upload.single('profilePic'), async (req, res) =>
       whoAmI: updatedUser.whoAmI || '',
       aboutInfo: updatedUser.aboutInfo || '',
       education: updatedUser.education || '',
-      onboardingCompleted: Boolean(updatedUser.onboardingCompleted)
+      onboardingCompleted: Boolean(updatedUser.onboardingCompleted),
+      friendsCount: (updatedUser.friends || []).length
     });
   } catch (err) {
     console.error(err);
@@ -140,6 +185,15 @@ router.post('/onboarding', protect, async (req, res) => {
     user.onboardingCompleted = true;
     await user.save();
 
+    emitToUserRooms({
+      req,
+      userIds: getDistinctIds([user._id, ...(user.friends || [])]),
+      payload: {
+        resource: 'profile',
+        userId: user._id.toString()
+      }
+    });
+
     res.json({ message: 'Onboarding saved successfully.' });
   } catch (err) {
     console.error(err);
@@ -152,13 +206,32 @@ router.get('/', protect, async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     const limit = Math.min(Number(req.query.limit || 50), 100);
+    const scope = String(req.query.scope || 'contacts').trim().toLowerCase();
     const currentUser = await User.findById(req.user._id).select(
       'friends outgoingFriendRequests incomingFriendRequests'
     );
 
+    if (!currentUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isDiscoverScope = scope === 'discover';
+
+    if (isDiscoverScope && !q) {
+      return res.json([]);
+    }
+
     const query = {
       _id: { $ne: req.user._id }
     };
+
+    if (!isDiscoverScope) {
+      const friendIds = (currentUser.friends || []).map((id) => id.toString());
+      if (friendIds.length === 0) {
+        return res.json([]);
+      }
+      query._id = { $in: friendIds };
+    }
 
     if (q) {
       query.$or = [
@@ -168,7 +241,7 @@ router.get('/', protect, async (req, res) => {
     }
 
     const users = await User.find(query)
-      .select('name username email profilePic')
+      .select(LIST_USER_SELECT)
       .limit(limit)
       .sort({ username: 1 });
 
@@ -191,7 +264,7 @@ router.get('/', protect, async (req, res) => {
 // GET /api/user/friends - Friend-only list for chat creation
 router.get('/friends', protect, async (req, res) => {
   try {
-    const currentUser = await User.findById(req.user._id).populate('friends', 'name username email profilePic');
+    const currentUser = await User.findById(req.user._id).populate('friends', LIST_USER_SELECT);
     if (!currentUser) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -201,6 +274,11 @@ router.get('/friends', protect, async (req, res) => {
       username: user.username,
       email: user.email,
       profilePic: user.profilePic,
+      bio: user.bio,
+      whoAmI: user.whoAmI || '',
+      aboutInfo: user.aboutInfo || '',
+      education: user.education || '',
+      interests: user.interests || [],
       relationship: 'friend'
     }));
     res.json(friends);
@@ -324,6 +402,33 @@ router.post('/friend-request/:userId/reject', protect, async (req, res) => {
     await requester.save();
 
     res.json({ message: 'Friend request rejected.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// GET /api/user/public/:userId - Public profile view for authenticated users
+router.get('/public/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+    const currentUser = await User.findById(req.user._id).select(
+      'friends outgoingFriendRequests incomingFriendRequests'
+    );
+
+    if (!currentUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const targetUser = await User.findById(userId).select(PUBLIC_PROFILE_SELECT);
+    if (!targetUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({ user: toPublicProfile(targetUser, currentUser) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error', error: err.message });

@@ -10,7 +10,16 @@ import User from '../models/user-model.js';
 
 const router = express.Router();
 
-const toId = (value) => value?.toString();
+const toId = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value?.toHexString === 'function') return value.toHexString();
+    if (typeof value === 'object') {
+        if (value._id && value._id !== value) return toId(value._id);
+        if (value.id) return String(value.id);
+    }
+    return String(value);
+};
 
 const generateInviteCode = () => crypto.randomBytes(6).toString('hex');
 
@@ -35,6 +44,64 @@ const isGroupMember = (group, userId) => {
     return (group.members || []).some((memberId) => toId(memberId) === id);
 };
 
+const getRelevantCommunityIds = async (userId) => {
+    const communities = await Community.find({
+        $or: [
+            { creator: userId },
+            { admins: userId },
+            { members: userId },
+            { joinRequests: userId }
+        ]
+    }).select('_id');
+
+    return communities.map((community) => community._id);
+};
+
+const buildRelevantGroupQuery = async (userId) => {
+    const communityIds = await getRelevantCommunityIds(userId);
+    const query = {
+        $or: [
+            { creator: userId },
+            { admins: userId },
+            { members: userId },
+            { joinRequests: userId }
+        ]
+    };
+
+    if (communityIds.length > 0) {
+        query.$or.push({ community: { $in: communityIds } });
+    }
+
+    return query;
+};
+
+const canAccessGroup = async (group, userId) => {
+    if (!group) return false;
+    if (
+        isGroupMember(group, userId)
+        || isGroupAdmin(group, userId)
+        || (group.joinRequests || []).some((id) => toId(id) === toId(userId))
+    ) {
+        return true;
+    }
+
+    if (!group.community) {
+        return false;
+    }
+
+    const relatedCommunity = await Community.findOne({
+        _id: toId(group.community),
+        $or: [
+            { creator: userId },
+            { admins: userId },
+            { members: userId },
+            { joinRequests: userId }
+        ]
+    }).select('_id');
+
+    return Boolean(relatedCommunity);
+};
+
 const ensureGroupChat = async (group) => {
     if (group.chat) return group.chat;
     const chat = await Chat.create({
@@ -56,12 +123,28 @@ const ensureAdminSeed = async (group) => {
     await group.save();
 };
 
-const populateGroup = (query) => (
+const populateGroupList = (query) => (
+    query
+        .populate('members', 'name username profilePic')
+        .populate('admins', 'name username profilePic')
+        .populate('creator', 'name username profilePic')
+        .populate('community', 'name icon')
+);
+
+const populateGroupDetail = (query) => (
     query
         .populate('members', 'name username profilePic')
         .populate('admins', 'name username profilePic')
         .populate('creator', 'name username profilePic')
         .populate('joinRequests', 'name username profilePic')
+        .populate({
+            path: 'community',
+            select: 'name icon members',
+            populate: {
+                path: 'members',
+                select: 'name username profilePic'
+            }
+        })
         .populate({
             path: 'chat',
             populate: {
@@ -81,8 +164,9 @@ const populateGroup = (query) => (
 // GET all groups
 router.get('/', protect, async (req, res) => {
     try {
-        const groups = await populateGroup(
-            Group.find().sort({ members: -1 })
+        const relevantQuery = await buildRelevantGroupQuery(req.user._id);
+        const groups = await populateGroupList(
+            Group.find(relevantQuery).sort({ members: -1 })
         );
 
         const userId = toId(req.user._id);
@@ -113,9 +197,14 @@ router.get('/:id', protect, async (req, res) => {
             return res.status(400).json({ message: 'Invalid group id' });
         }
 
-        const group = await populateGroup(Group.findById(req.params.id));
+        const group = await populateGroupDetail(Group.findById(req.params.id));
 
         if (!group) return res.status(404).json({ message: 'Group not found' });
+
+        const allowed = await canAccessGroup(group, req.user._id);
+        if (!allowed) {
+            return res.status(403).json({ message: 'Group is only visible in your relevant spaces.' });
+        }
 
         await ensureAdminSeed(group);
         await ensureGroupChat(group);
@@ -216,7 +305,7 @@ router.post('/', protect, async (req, res) => {
             }
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.status(201).json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -259,7 +348,7 @@ router.put('/:id', protect, async (req, res) => {
         if (name && group.chat && prevName !== group.name) {
             await Chat.findByIdAndUpdate(group.chat, { name: group.name });
         }
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -303,7 +392,7 @@ router.post('/:id/join', protect, async (req, res) => {
         await ensureGroupChat(group);
 
         if (isGroupMember(group, req.user._id)) {
-            const populated = await populateGroup(Group.findById(group._id));
+            const populated = await populateGroupDetail(Group.findById(group._id));
             return res.json(populated);
         }
 
@@ -325,7 +414,7 @@ router.post('/:id/join', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -341,7 +430,7 @@ router.post('/invite/:code/join', protect, async (req, res) => {
         await ensureGroupChat(group);
 
         if (isGroupMember(group, req.user._id)) {
-            const populated = await populateGroup(Group.findById(group._id));
+            const populated = await populateGroupDetail(Group.findById(group._id));
             return res.json(populated);
         }
 
@@ -362,7 +451,7 @@ router.post('/invite/:code/join', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -377,6 +466,10 @@ router.post('/:id/invite', protect, async (req, res) => {
 
         if (!isGroupMember(group, req.user._id)) {
             return res.status(403).json({ message: 'Only members can access invite' });
+        }
+
+        if (group.settings?.onlyAdminsInvite && !isGroupAdmin(group, req.user._id)) {
+            return res.status(403).json({ message: 'Only admins can manage invite links' });
         }
 
         const refresh = Boolean(req.body?.refresh);
@@ -434,8 +527,21 @@ router.post('/:id/members', protect, async (req, res) => {
         }
 
         const uniqueUsers = [...new Set((members || []).map((id) => id.toString()))];
+        const currentUser = await User.findById(req.user._id).select('friends');
+        const allowedMemberIds = new Set((currentUser?.friends || []).map((id) => toId(id)));
+        if (group.community) {
+            const community = await Community.findById(group.community).select('members');
+            (community?.members || []).forEach((id) => allowedMemberIds.add(toId(id)));
+        }
+
         const userDocs = await User.find({ _id: { $in: uniqueUsers } }).select('_id');
-        const validIds = userDocs.map((u) => u._id.toString());
+        const validIds = userDocs
+            .map((u) => u._id.toString())
+            .filter((id) => allowedMemberIds.has(id));
+
+        if (uniqueUsers.length > 0 && validIds.length === 0) {
+            return res.status(400).json({ message: 'Only relevant contacts can be added to this group' });
+        }
 
         group.members = group.members || [];
         validIds.forEach((id) => {
@@ -456,7 +562,7 @@ router.post('/:id/members', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -492,7 +598,7 @@ router.post('/:id/members/remove', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -520,7 +626,7 @@ router.post('/:id/admins/promote', protect, async (req, res) => {
             await group.save();
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -545,7 +651,7 @@ router.post('/:id/admins/demote', protect, async (req, res) => {
         group.admins = (group.admins || []).filter((id) => toId(id) !== toId(memberId));
         await group.save();
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -578,7 +684,7 @@ router.post('/:id/join-requests/:userId/approve', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -601,7 +707,7 @@ router.post('/:id/join-requests/:userId/reject', protect, async (req, res) => {
         );
         await group.save();
 
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -618,15 +724,16 @@ router.post('/:id/settings', protect, async (req, res) => {
             return res.status(403).json({ message: 'Only admins can change settings' });
         }
 
-        const { adminsOnly, requireApproval } = req.body;
+        const { adminsOnly, onlyAdminsInvite, requireApproval } = req.body;
         group.settings = {
             ...group.settings,
             adminsOnly: typeof adminsOnly === 'boolean' ? adminsOnly : group.settings?.adminsOnly,
+            onlyAdminsInvite: typeof onlyAdminsInvite === 'boolean' ? onlyAdminsInvite : group.settings?.onlyAdminsInvite,
             requireApproval: typeof requireApproval === 'boolean' ? requireApproval : group.settings?.requireApproval
         };
 
         await group.save();
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -660,7 +767,7 @@ router.post('/:id/pins', protect, async (req, res) => {
         }
 
         await group.save();
-        const populated = await populateGroup(Group.findById(group._id));
+        const populated = await populateGroupDetail(Group.findById(group._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });

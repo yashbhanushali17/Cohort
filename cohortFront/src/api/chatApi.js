@@ -152,7 +152,7 @@ export const getUsers = async () => {
 export const searchUsers = async (q = '') => {
     try {
         const response = await axios.get(`${API_URL}/user`, {
-            params: { q, limit: 50 },
+            params: { q, limit: 50, scope: 'discover' },
             headers: getAuthHeader()
         });
         return response.data;
@@ -231,6 +231,18 @@ export const getUserProfile = async () => {
         return response.data;
     } catch (error) {
         console.error('Error fetching user profile:', error);
+        throw error;
+    }
+};
+
+export const getPublicUserProfile = async (userId) => {
+    try {
+        const response = await axios.get(`${API_URL}/user/public/${userId}`, {
+            headers: getAuthHeader()
+        });
+        return response.data;
+    } catch (error) {
+        console.error('Error fetching public user profile:', error);
         throw error;
     }
 };

@@ -8,6 +8,7 @@ import Community from '../models/community-model.js';
 import User from '../models/user-model.js';
 import protect from '../middleware/auth-middleware.js';
 import messageUpload from '../middleware/message-upload-middleware.js';
+import { saveUploadAsMedia } from '../utils/media.js';
 
 const router = express.Router();
 
@@ -51,12 +52,12 @@ const buildMessageType = (attachments, poll, explicitType) => {
 
 const populateMessage = (query) => (
   query
-    .populate('sender', 'name username profilePic')
+    .populate('sender', 'name username profilePic bio whoAmI aboutInfo education interests')
     .populate({
       path: 'replyTo',
       populate: {
         path: 'sender',
-        select: 'name username profilePic'
+        select: 'name username profilePic bio whoAmI aboutInfo education interests'
       }
     })
 );
@@ -104,11 +105,17 @@ router.post('/upload', protect, messageUpload.single('file'), async (req, res) =
       return res.status(400).json({ message: 'File is required' });
     }
 
+    const storedMedia = await saveUploadAsMedia({
+      file: req.file,
+      ownerId: req.user._id,
+      category: 'messages'
+    });
+
     res.json({
-      url: `/uploads/${req.file.filename}`,
-      fileName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size
+      url: storedMedia.url,
+      fileName: storedMedia.fileName,
+      mimeType: storedMedia.mimeType,
+      size: storedMedia.size
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -259,6 +266,10 @@ router.post('/', protect, async (req, res) => {
     });
 
     const populatedMessage = await populateMessage(Message.findById(message._id));
+    const io = req.app.get('io');
+    if (io) {
+      io.to(chatId.toString()).emit('receive-message', populatedMessage);
+    }
 
     await emitNotifications({
       req,

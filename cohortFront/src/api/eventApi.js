@@ -27,7 +27,7 @@ export const createEvent = async (data) => {
         });
         return response.data;
     } catch (error) {
-        console.error('Error creating event:', error);
+        console.error('Error creating event:', error.response?.data || error);
         throw error;
     }
 };

@@ -6,7 +6,9 @@ const socket = io(SOCKET_URL, {
     autoConnect: false, // Don't connect automatically, we'll connect when user logs in
     reconnection: true,
     reconnectionDelay: 1000,
-    reconnectionAttempts: 5
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: Infinity,
+    timeout: 20000
 });
 
 // Connect socket (call this after user logs in)
@@ -28,11 +30,6 @@ export const joinChat = (chatId) => {
     socket.emit('join-chat', chatId);
 };
 
-// Send a message via socket
-export const sendMessageSocket = (chatId, message) => {
-    socket.emit('send-message', { chatId, message });
-};
-
 // Listen for incoming messages
 export const onReceiveMessage = (callback) => {
     socket.on('receive-message', callback);
@@ -48,8 +45,16 @@ export const onConnect = (callback) => {
     socket.on('connect', callback);
 };
 
+export const offConnect = (callback) => {
+    socket.off('connect', callback);
+};
+
 export const onDisconnect = (callback) => {
     socket.on('disconnect', callback);
+};
+
+export const offDisconnect = (callback) => {
+    socket.off('disconnect', callback);
 };
 
 // Emit user online status
@@ -142,6 +147,162 @@ export const onNotification = (callback) => {
 export const offNotification = () => {
     if (socket) {
         socket.off('notification');
+    }
+};
+
+export const onAppRefresh = (callback) => {
+    if (socket) {
+        socket.on('app-refresh', callback);
+    }
+};
+
+export const offAppRefresh = (callback) => {
+    if (socket) {
+        socket.off('app-refresh', callback);
+    }
+};
+
+export const emitCallRing = ({ chatId, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:ring', { chatId, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallAccept = ({ chatId, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:accept', { chatId, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallDecline = ({ chatId, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:decline', { chatId, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallBusy = ({ chatId, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:busy', { chatId, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallOffer = ({ chatId, offer, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:offer', { chatId, offer, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallAnswer = ({ chatId, answer, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:answer', { chatId, answer, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallIceCandidate = ({ chatId, candidate, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:ice-candidate', { chatId, candidate, fromUserId, fromUserName });
+    }
+};
+
+export const emitCallEnd = ({ chatId, fromUserId, fromUserName }) => {
+    if (socket) {
+        socket.emit('call:end', { chatId, fromUserId, fromUserName });
+    }
+};
+
+export const onIncomingCall = (callback) => {
+    if (socket) {
+        socket.on('call:incoming', callback);
+    }
+};
+
+export const offIncomingCall = (callback) => {
+    if (socket) {
+        socket.off('call:incoming', callback);
+    }
+};
+
+export const onCallAccepted = (callback) => {
+    if (socket) {
+        socket.on('call:accepted', callback);
+    }
+};
+
+export const offCallAccepted = (callback) => {
+    if (socket) {
+        socket.off('call:accepted', callback);
+    }
+};
+
+export const onCallDeclined = (callback) => {
+    if (socket) {
+        socket.on('call:declined', callback);
+    }
+};
+
+export const offCallDeclined = (callback) => {
+    if (socket) {
+        socket.off('call:declined', callback);
+    }
+};
+
+export const onCallBusy = (callback) => {
+    if (socket) {
+        socket.on('call:busy', callback);
+    }
+};
+
+export const offCallBusy = (callback) => {
+    if (socket) {
+        socket.off('call:busy', callback);
+    }
+};
+
+export const onCallOffer = (callback) => {
+    if (socket) {
+        socket.on('call:offer', callback);
+    }
+};
+
+export const offCallOffer = (callback) => {
+    if (socket) {
+        socket.off('call:offer', callback);
+    }
+};
+
+export const onCallAnswer = (callback) => {
+    if (socket) {
+        socket.on('call:answer', callback);
+    }
+};
+
+export const offCallAnswer = (callback) => {
+    if (socket) {
+        socket.off('call:answer', callback);
+    }
+};
+
+export const onCallIceCandidate = (callback) => {
+    if (socket) {
+        socket.on('call:ice-candidate', callback);
+    }
+};
+
+export const offCallIceCandidate = (callback) => {
+    if (socket) {
+        socket.off('call:ice-candidate', callback);
+    }
+};
+
+export const onCallEnded = (callback) => {
+    if (socket) {
+        socket.on('call:ended', callback);
+    }
+};
+
+export const offCallEnded = (callback) => {
+    if (socket) {
+        socket.off('call:ended', callback);
     }
 };
 

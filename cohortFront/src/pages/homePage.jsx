@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, X, Search, Bell, User, Send, ArrowLeft, LogOut, UserPlus, Users, Smile, Paperclip, Sun, Moon, UserCheck, MapPin, Clock, Pin, Reply, Trash2, Edit3 } from 'lucide-react';
+import { Menu, X, Search, Bell, User, Send, ArrowLeft, LogOut, UserPlus, Users, Smile, Paperclip, Sun, Moon, UserCheck, MapPin, Clock, Pin, Reply, Trash2, Edit3, Video, VideoOff, Mic, MicOff, Phone, PhoneOff } from 'lucide-react';
 import EmojiPicker from 'emoji-picker-react';
 import {
   getChats,
@@ -14,10 +14,11 @@ import {
   deleteMessage,
   votePoll,
   searchMessages,
-  getUsers,
+  getFriends,
   createChat,
   createGroupChat,
   getUserProfile,
+  getPublicUserProfile,
   markMessagesAsRead,
   searchUsers,
   getFriendRequests,
@@ -67,12 +68,102 @@ import { getEvents, createEvent, rsvpEvent } from '../api/eventApi';
 import { updateUserProfile, completeOnboarding } from '../api/userApi';
 import { getUpdates, createUpdate } from '../api/updateApi';
 import { sendAiMessage } from '../api/aiApi';
-import { connectSocket, disconnectSocket, joinChat, sendMessageSocket, onReceiveMessage, offReceiveMessage, emitUserOnline, onUserStatusChange, offUserStatusChange, emitTypingStart, emitTypingStop, onUserTyping, offUserTyping, emitMessagesRead, onMessagesRead, offMessagesRead, emitMessageReaction, onMessageReaction, offMessageReaction, onNotification, offNotification } from '../api/socket';
-import { API_BASE_URL } from '../api/config';
+import {
+  connectSocket,
+  disconnectSocket,
+  joinChat,
+  onReceiveMessage,
+  offReceiveMessage,
+  emitUserOnline,
+  onUserStatusChange,
+  offUserStatusChange,
+  emitTypingStart,
+  emitTypingStop,
+  onUserTyping,
+  offUserTyping,
+  emitMessagesRead,
+  onMessagesRead,
+  offMessagesRead,
+  emitMessageReaction,
+  onMessageReaction,
+  offMessageReaction,
+  onNotification,
+  offNotification,
+  onConnect,
+  offConnect,
+  onAppRefresh,
+  offAppRefresh,
+  emitCallRing,
+  emitCallAccept,
+  emitCallDecline,
+  emitCallBusy,
+  emitCallOffer,
+  emitCallAnswer,
+  emitCallIceCandidate,
+  emitCallEnd,
+  onIncomingCall,
+  offIncomingCall,
+  onCallAccepted,
+  offCallAccepted,
+  onCallDeclined,
+  offCallDeclined,
+  onCallBusy,
+  offCallBusy,
+  onCallOffer,
+  offCallOffer,
+  onCallAnswer,
+  offCallAnswer,
+  onCallIceCandidate,
+  offCallIceCandidate,
+  onCallEnded,
+  offCallEnded
+} from '../api/socket';
+import { API_BASE_URL, DEFAULT_API_BASE_URL } from '../api/config';
 import { useNavigate } from 'react-router-dom';
 
 const NAV_TABS = ['chats', 'ai', 'communities', 'groups', 'updates', 'events', 'settings'];
-const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉', '😮'];
+const QUICK_REACTIONS = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F389}', '\u{1F62E}'];
+const LOCATION_MESSAGE_PREFIX = '\u{1F4CD} My Location: ';
+const MESSAGE_REACT_LABEL = '\u{1F642}';
+const MESSAGE_STATUS_SINGLE = '\u2713';
+const MESSAGE_STATUS_DOUBLE = '\u2713\u2713';
+const LABEL_SEPARATOR = '\u00B7';
+const buildIceServerList = () => {
+  const servers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
+
+  const turnUrls = String(import.meta.env.VITE_TURN_URLS || import.meta.env.VITE_TURN_URL || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (turnUrls.length > 0) {
+    servers.push({
+      urls: turnUrls,
+      username: import.meta.env.VITE_TURN_USERNAME || '',
+      credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
+    });
+  }
+
+  return servers;
+};
+
+const WEBRTC_CONFIGURATION = {
+  iceServers: buildIceServerList()
+};
+const INITIAL_CALL_STATE = {
+  status: 'idle',
+  chatId: '',
+  chatName: '',
+  fromUserId: '',
+  fromUserName: '',
+  error: '',
+  isMuted: false,
+  isCameraOff: false,
+  isReceiveOnly: false
+};
 
 const padDatePart = (value) => String(value).padStart(2, '0');
 const getCurrentMinuteDate = () => {
@@ -85,15 +176,133 @@ const getLocalDateTimeValue = (date) => {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
 };
 
+const IMAGE_FILE_PATTERN = /^[^/\\?#]+\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico)(?:[?#].*)?$/i;
+const SUPPORTED_IMAGE_UPLOAD_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp,image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/avif,image/bmp';
+const SUPPORTED_IMAGE_UPLOAD_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp']);
+const SUPPORTED_IMAGE_UPLOAD_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/avif',
+  'image/bmp'
+]);
+
+const normalizeMediaPath = (path) => {
+  if (typeof path !== 'string') return '';
+  return path.trim().replace(/\\/g, '/');
+};
+
+const getUploadImageError = (file) => {
+  if (!file) return '';
+
+  const fileName = String(file.name || '').toLowerCase();
+  const extension = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '';
+  const mimeType = String(file.type || '').toLowerCase();
+
+  if (!SUPPORTED_IMAGE_UPLOAD_EXTENSIONS.has(extension) || !SUPPORTED_IMAGE_UPLOAD_MIME_TYPES.has(mimeType)) {
+    return 'Please choose a JPG, PNG, GIF, WebP, SVG, AVIF, or BMP image.';
+  }
+
+  return '';
+};
+
+const buildMediaCandidates = (path) => {
+  const normalizedPath = normalizeMediaPath(path);
+  if (!normalizedPath) return [];
+
+  if (/^(?:data:|blob:)/i.test(normalizedPath)) {
+    return [normalizedPath];
+  }
+
+  if (/^https?:/i.test(normalizedPath)) {
+    return [normalizedPath];
+  }
+
+  const cleanPath = IMAGE_FILE_PATTERN.test(normalizedPath)
+    ? `/uploads/${normalizedPath}`
+    : (normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`);
+
+  const candidates = [`${API_BASE_URL}${cleanPath}`];
+  if (DEFAULT_API_BASE_URL && DEFAULT_API_BASE_URL !== API_BASE_URL) {
+    candidates.push(`${DEFAULT_API_BASE_URL}${cleanPath}`);
+  }
+
+  return [...new Set(candidates)];
+};
+
+const getApiErrorMessage = (error, fallbackMessage) => {
+  const serverMessage = error?.response?.data?.message;
+  const serverError = error?.response?.data?.error;
+
+  if (serverMessage && serverMessage !== 'Server error') {
+    return serverMessage;
+  }
+
+  return serverError || serverMessage || error?.message || fallbackMessage;
+};
+
+const getRelationshipBadgeLabel = (relationship) => {
+  const normalized = String(relationship || '').trim().toLowerCase();
+  if (!normalized || normalized === 'none') return '';
+  if (normalized === 'self') return 'you';
+  if (normalized === 'friend') return 'contact';
+  if (normalized === 'requested') return 'request sent';
+  if (normalized === 'incoming') return 'request received';
+  return normalized;
+};
+
+function SmartImage({ srcPath, alt, fallback = null, onError, ...imgProps }) {
+  const candidates = buildMediaCandidates(srcPath);
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const [isBroken, setIsBroken] = useState(false);
+
+  useEffect(() => {
+    setCandidateIndex(0);
+    setIsBroken(false);
+  }, [srcPath]);
+
+  if (!candidates.length || isBroken) {
+    return fallback;
+  }
+
+  const handleError = (event) => {
+    if (candidateIndex < candidates.length - 1) {
+      setCandidateIndex(candidateIndex + 1);
+    } else {
+      setIsBroken(true);
+    }
+
+    if (typeof onError === 'function') {
+      onError(event);
+    }
+  };
+
+  return (
+    <img
+      {...imgProps}
+      src={candidates[candidateIndex]}
+      alt={alt}
+      onError={handleError}
+    />
+  );
+}
+
 const HomePage = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('chats');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
+  const [cursorEnabled, setCursorEnabled] = useState(false);
   const [cursorSize, setCursorSize] = useState(40);
 
   // User state
   const [currentUser, setCurrentUser] = useState(null);
+  const [profilePreview, setProfilePreview] = useState(null);
+  const [profilePreviewLoading, setProfilePreviewLoading] = useState(false);
+  const [profilePreviewError, setProfilePreviewError] = useState('');
+  const [appLoading, setAppLoading] = useState(true);
+  const [pageSectionLoading, setPageSectionLoading] = useState('');
 
   // Chat state
   const [chats, setChats] = useState([]);
@@ -120,7 +329,8 @@ const HomePage = () => {
   const [allUsers, setAllUsers] = useState([]);
   const [discoverUsers, setDiscoverUsers] = useState([]);
   const [friendRequests, setFriendRequests] = useState({ incoming: [], outgoing: [] });
-  const [activeChatModalTab, setActiveChatModalTab] = useState('friends');
+  const [peopleDirectoryLoading, setPeopleDirectoryLoading] = useState(false);
+  const [activeChatModalTab, setActiveChatModalTab] = useState('contacts');
   const [friendActionLoading, setFriendActionLoading] = useState('');
   const [chatActionError, setChatActionError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -129,6 +339,7 @@ const HomePage = () => {
 
   // Online status
   const [onlineUsers, setOnlineUsers] = useState(new Set());
+  const [callState, setCallState] = useState(INITIAL_CALL_STATE);
 
   // Typing indicators
   const [typingUsers, setTypingUsers] = useState({});
@@ -137,6 +348,22 @@ const HomePage = () => {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const messageInputRef = useRef(null);
   const chatSearchInputRef = useRef(null);
+  const notificationPanelRef = useRef(null);
+  const notificationButtonRef = useRef(null);
+  const chatsRef = useRef([]);
+  const currentUserRef = useRef(null);
+  const selectedChatRef = useRef(null);
+  const activeCallRef = useRef(INITIAL_CALL_STATE);
+  const cursorRef = useRef(null);
+  const cursorTargetRef = useRef({ x: 0, y: 0, size: 40, opacity: 0 });
+  const cursorCurrentRef = useRef({ x: 0, y: 0, size: 40, opacity: 0 });
+  const cursorFrameRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const pendingIceCandidatesRef = useRef([]);
 
   // Typing timeout
   const typingTimeoutRef = useRef(null);
@@ -165,6 +392,7 @@ const HomePage = () => {
   const [communities, setCommunities] = useState([]);
   const [groups, setGroups] = useState([]);
   const [events, setEvents] = useState([]);
+  const [activeEventsTab, setActiveEventsTab] = useState('upcoming');
   const [showCommunityModal, setShowCommunityModal] = useState(false);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
@@ -205,12 +433,14 @@ const HomePage = () => {
   const [newEventTitle, setNewEventTitle] = useState('');
   const [newEventDesc, setNewEventDesc] = useState('');
   const [newEventDate, setNewEventDate] = useState('');
+  const [newEventEndDate, setNewEventEndDate] = useState('');
   const [newEventLocation, setNewEventLocation] = useState('Online');
   const [newEventCoverImage, setNewEventCoverImage] = useState('');
   const [newEventMaxAttendees, setNewEventMaxAttendees] = useState('');
   const [newEventVisibility, setNewEventVisibility] = useState('contacts'); // contacts | community | group
   const [newEventContextId, setNewEventContextId] = useState(''); // Community/Group ID
   const [eventDateError, setEventDateError] = useState('');
+  const [eventCreateError, setEventCreateError] = useState('');
 
   // Bitmoji / Avatar State
   const [showBitmojiModal, setShowBitmojiModal] = useState(false);
@@ -241,6 +471,81 @@ const HomePage = () => {
   const [messageTranslationLoadingId, setMessageTranslationLoadingId] = useState('');
   const minDateTimeLocal = getLocalDateTimeValue(getCurrentMinuteDate());
 
+  const getCurrentUserId = () => localStorage.getItem('userId');
+  const getEntityId = (value) => String(value?._id || value?.id || value || '');
+
+  const getEventEndValue = (event) => event?.endDate || event?.date;
+
+  const isEventPast = (event) => {
+    const endValue = getEventEndValue(event);
+    const endDate = new Date(endValue);
+    if (Number.isNaN(endDate.getTime())) return false;
+    return Boolean(event?.isExpired) || endDate < new Date();
+  };
+
+  const isMyEvent = (event) => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId || !event) return false;
+    const creatorId = event.creator?._id || event.creator?.id || event.creator;
+    if ((creatorId || '').toString() === currentUserId) return true;
+    return (event.attendees || []).some((attendee) => ((attendee?._id || attendee) || '').toString() === currentUserId);
+  };
+
+  const buildEventRangeError = (startValue, endValue) => {
+    const startDate = new Date(startValue);
+    if (Number.isNaN(startDate.getTime())) {
+      return 'Please choose a valid event date and time.';
+    }
+
+    const endDate = new Date(endValue || startValue);
+    if (Number.isNaN(endDate.getTime())) {
+      return 'Please choose a valid event end date and time.';
+    }
+
+    if (startDate < getCurrentMinuteDate()) {
+      return 'Past dates are not allowed.';
+    }
+
+    if (endDate < startDate) {
+      return 'End date must be after the start date.';
+    }
+
+    return '';
+  };
+
+  const joinKnownChatRooms = (chatList = chatsRef.current) => {
+    (chatList || []).forEach((chat) => {
+      if (chat?._id) {
+        joinChat(chat._id);
+      }
+    });
+  };
+
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  useEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
+
+  useEffect(() => {
+    activeCallRef.current = callState;
+  }, [callState]);
+
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current || null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current || null;
+    }
+  }, [callState.status]);
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (langDropdownRef.current && !langDropdownRef.current.contains(event.target)) {
@@ -252,16 +557,31 @@ const HomePage = () => {
   }, []);
 
   useEffect(() => {
+    if (!showNotifications) return undefined;
+
+    const handleNotificationOutsideClick = (event) => {
+      if (notificationPanelRef.current?.contains(event.target) || notificationButtonRef.current?.contains(event.target)) {
+        return;
+      }
+      setShowNotifications(false);
+    };
+
+    document.addEventListener('mousedown', handleNotificationOutsideClick);
+    return () => document.removeEventListener('mousedown', handleNotificationOutsideClick);
+  }, [showNotifications]);
+
+  useEffect(() => {
     if (!showScheduleModal && scheduleDateError) {
       setScheduleDateError('');
     }
   }, [showScheduleModal, scheduleDateError]);
 
   useEffect(() => {
-    if (!showEventModal && eventDateError) {
+    if (!showEventModal && (eventDateError || eventCreateError)) {
       setEventDateError('');
+      setEventCreateError('');
     }
-  }, [showEventModal, eventDateError]);
+  }, [showEventModal, eventDateError, eventCreateError]);
 
   // Auto-scroll to bottom for AI messages
   useEffect(() => {
@@ -308,7 +628,9 @@ const HomePage = () => {
   const [editInterests, setEditInterests] = useState('');
   const [previewImage, setPreviewImage] = useState(null);
   const [profileFile, setProfileFile] = useState(null);
+  const [profileUpdateLoading, setProfileUpdateLoading] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('cohortTheme') || 'dark');
+  const [isThemeTransitioning, setIsThemeTransitioning] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingForm, setOnboardingForm] = useState({
     name: '',
@@ -320,13 +642,40 @@ const HomePage = () => {
 
   // Load chats on component mount
   useEffect(() => {
-    loadChats();
+    let isMounted = true;
+
+    const bootstrap = async () => {
+      setAppLoading(true);
+      await Promise.allSettled([loadUserProfile(), loadChats()]);
+      if (isMounted) {
+        setAppLoading(false);
+      }
+    };
+
+    const handleSocketConnect = () => {
+      const userId = getCurrentUserId();
+      if (userId) {
+        emitUserOnline(userId);
+      }
+      joinKnownChatRooms();
+    };
+
+    bootstrap();
+    onConnect(handleSocketConnect);
     connectSocket();
 
     return () => {
+      isMounted = false;
+      offConnect(handleSocketConnect);
       disconnectSocket();
     };
   }, []);
+
+  useEffect(() => {
+    if (chats.length > 0) {
+      joinKnownChatRooms(chats);
+    }
+  }, [chats]);
 
   useEffect(() => {
     const savedChatAccess = localStorage.getItem('aiAllowChatAccess');
@@ -353,14 +702,78 @@ const HomePage = () => {
     document.body.dataset.theme = theme;
   }, [theme]);
 
+  useEffect(() => {
+    if (!isThemeTransitioning) return undefined;
+
+    const timer = setTimeout(() => {
+      setIsThemeTransitioning(false);
+    }, 520);
+
+    return () => clearTimeout(timer);
+  }, [isThemeTransitioning]);
+
+  const handleThemeToggle = () => {
+    setIsThemeTransitioning(true);
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const finePointerQuery = window.matchMedia('(pointer: fine)');
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+    const syncCursorCapability = () => {
+      setCursorEnabled(finePointerQuery.matches && !reducedMotionQuery.matches);
+    };
+
+    syncCursorCapability();
+
+    const addListener = (query, handler) => {
+      if (typeof query.addEventListener === 'function') {
+        query.addEventListener('change', handler);
+        return () => query.removeEventListener('change', handler);
+      }
+
+      query.addListener(handler);
+      return () => query.removeListener(handler);
+    };
+
+    const removeFinePointerListener = addListener(finePointerQuery, syncCursorCapability);
+    const removeReducedMotionListener = addListener(reducedMotionQuery, syncCursorCapability);
+
+    return () => {
+      removeFinePointerListener();
+      removeReducedMotionListener();
+    };
+  }, []);
+
+  useEffect(() => {
+    cursorTargetRef.current.size = cursorSize;
+  }, [cursorSize]);
+
+  useEffect(() => {
+    return () => {
+      if (previewImage && previewImage.startsWith('blob:')) {
+        URL.revokeObjectURL(previewImage);
+      }
+    };
+  }, [previewImage]);
+
   // Listen for real-time messages
   useEffect(() => {
     onReceiveMessage((message) => {
-      const currentUserId = localStorage.getItem('userId');
-      const senderId = message?.sender?._id || message?.sender;
+      const curId = localStorage.getItem('userId');
+      const sId = (message?.sender?._id || message?.sender)?.toString();
+      const isOwnMessage = sId === curId;
       if (selectedChat && message.chat === selectedChat._id) {
-        setMessages(prev => [...prev, message]);
-      } else if (senderId && senderId !== currentUserId) {
+        setMessages(prev => {
+          if (prev.some(m => m._id === message._id)) return prev;
+          return [...prev, message];
+        });
+      } else if (!isOwnMessage) {
         pushNotification({
           type: 'message',
           chatId: message.chat,
@@ -368,7 +781,6 @@ const HomePage = () => {
           from: message?.sender?.name || 'New message'
         });
       }
-      // Update chat list to show new message
       loadChats();
     });
 
@@ -398,6 +810,59 @@ const HomePage = () => {
       offNotification();
     };
   }, []);
+
+  useEffect(() => {
+    const handleAppRefresh = ({ resource } = {}) => {
+      const refreshType = resource || 'all';
+
+      if (refreshType === 'all' || refreshType === 'profile') {
+        loadUserProfile();
+        loadChats();
+        if (activeTab === 'updates' || selectedGroupTab === 'updates') {
+          loadUpdates();
+        }
+        if (activeTab === 'events' || selectedGroupTab === 'events') {
+          loadEvents();
+        }
+        if (activeTab === 'communities') {
+          loadCommunities();
+        }
+        if (activeTab === 'groups') {
+          loadGroups();
+        }
+      }
+
+      if (refreshType === 'all' || refreshType === 'events') {
+        if (activeTab === 'events' || selectedGroupTab === 'events') {
+          loadEvents();
+        }
+      }
+
+      if (refreshType === 'all' || refreshType === 'updates') {
+        if (activeTab === 'updates' || selectedGroupTab === 'updates') {
+          loadUpdates();
+        }
+      }
+
+      if (refreshType === 'all' || refreshType === 'communities') {
+        if (activeTab === 'communities') {
+          loadCommunities();
+        }
+      }
+
+      if (refreshType === 'all' || refreshType === 'groups') {
+        if (activeTab === 'groups') {
+          loadGroups();
+        }
+      }
+    };
+
+    onAppRefresh(handleAppRefresh);
+
+    return () => {
+      offAppRefresh(handleAppRefresh);
+    };
+  }, [activeTab, selectedGroupTab]);
 
   // Load messages when chat is selected and mark as read
   useEffect(() => {
@@ -445,15 +910,62 @@ const HomePage = () => {
 
   // Load Communities & Events & Groups & Updates
   useEffect(() => {
-    if (activeTab === 'communities') {
-      loadCommunities();
-    } else if (activeTab === 'groups') {
-      loadGroups();
-    } else if (activeTab === 'events') {
-      loadEvents();
-    } else if (activeTab === 'updates') {
-      loadUpdates();
-    }
+    let cancelled = false;
+
+    const loadActiveTab = async () => {
+      const loaders = {
+        communities: loadCommunities,
+        groups: loadGroups,
+        events: loadEvents,
+        updates: loadUpdates
+      };
+
+      const loader = loaders[activeTab];
+      if (!loader) return;
+
+      setPageSectionLoading(activeTab);
+      try {
+        await loader();
+      } finally {
+        if (!cancelled) {
+          setPageSectionLoading((current) => (current === activeTab ? '' : current));
+        }
+      }
+    };
+
+    loadActiveTab();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadChats();
+      if (selectedChat?._id) {
+        loadMessages(selectedChat._id);
+      }
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [selectedChat]);
+
+  useEffect(() => {
+    if (!['communities', 'groups', 'events', 'updates'].includes(activeTab)) return undefined;
+
+    const loaderMap = {
+      communities: loadCommunities,
+      groups: loadGroups,
+      events: loadEvents,
+      updates: loadUpdates
+    };
+
+    const interval = setInterval(() => {
+      loaderMap[activeTab]?.();
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, [activeTab]);
 
   useEffect(() => {
@@ -470,6 +982,12 @@ const HomePage = () => {
     }
   }, [activeTab, selectedGroupTab, selectedGroup]);
 
+  useEffect(() => {
+    if (activeTab === 'groups' && selectedGroupTab === 'events') {
+      loadEvents();
+    }
+  }, [activeTab, selectedGroupTab, selectedGroup]);
+
   const loadUpdates = async () => {
     try {
       const data = await getUpdates();
@@ -482,6 +1000,24 @@ const HomePage = () => {
   const pushNotification = (note) => {
     const id = `${note.type || 'message'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setNotifications(prev => [{ id, ...note }, ...prev].slice(0, 50));
+  };
+
+  const handleNotificationItemClick = (note) => {
+    if (!note) return;
+
+    setShowNotifications(false);
+
+    if (note.chatId) {
+      const matchingChat = chatsRef.current.find((chat) => chat._id === note.chatId);
+      if (matchingChat) {
+        setActiveTab('chats');
+        setSelectedCommunity(null);
+        setSelectedGroup(null);
+        setSelectedChat(matchingChat);
+      }
+    }
+
+    setNotifications((prev) => prev.filter((item) => item.id !== note.id));
   };
 
   const getLastAiUserMessage = () => {
@@ -510,9 +1046,10 @@ const HomePage = () => {
 
   const handleAiSend = async (e) => {
     e.preventDefault();
-    if (!aiInput.trim()) return;
+    const trimmedInput = aiInput.trim();
+    if (!trimmedInput) return;
 
-    const userMsg = { role: 'user', content: aiInput };
+    const userMsg = { role: 'user', content: trimmedInput };
     setAiMessages(prev => [...prev, userMsg]);
     setAiInput('');
 
@@ -587,6 +1124,7 @@ const HomePage = () => {
 
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
+    setProfileUpdateLoading(true);
     try {
       const formData = new FormData();
       formData.append('name', editName || currentUser?.name || '');
@@ -610,9 +1148,39 @@ const HomePage = () => {
       setEditAboutInfo(updatedUser.aboutInfo || '');
       setEditEducation(updatedUser.education || '');
       setEditInterests((updatedUser.interests || []).join(', '));
-      // Optional: Show success notification
+      setProfileFile(null);
+      setPreviewImage(null);
+      setProfilePreview((prev) => {
+        if (!prev) return prev;
+        const prevId = prev._id || prev.id;
+        const updatedId = updatedUser._id || updatedUser.id;
+        if (!prevId || !updatedId || prevId.toString() !== updatedId.toString()) {
+          return prev;
+        }
+        return { ...prev, ...updatedUser };
+      });
+
+      await Promise.allSettled([
+        loadUserProfile(),
+        loadChats(),
+        loadFriendsAndRequests(),
+        loadUpdates(),
+        loadCommunities(),
+        loadGroups()
+      ]);
+
+      pushNotification({
+        type: 'profile',
+        content: 'Profile updated successfully.'
+      });
     } catch (error) {
+      pushNotification({
+        type: 'profile',
+        content: getApiErrorMessage(error, 'Could not update your profile right now.')
+      });
       console.error('Failed to update profile', error);
+    } finally {
+      setProfileUpdateLoading(false);
     }
   };
 
@@ -634,6 +1202,10 @@ const HomePage = () => {
       setNewUpdateVisibility('contacts');
       setNewUpdateContextId('');
     } catch (error) {
+      pushNotification({
+        type: 'update',
+        content: getApiErrorMessage(error, 'Could not create this update right now.')
+      });
       console.error('Failed to create update', error);
     }
   };
@@ -667,9 +1239,28 @@ const HomePage = () => {
 
   const handleCreateCommunity = async (e) => {
     e.preventDefault();
+    const trimmedName = newCommunityName.trim();
+    const normalizedName = trimmedName.toLowerCase();
+
+    if (!trimmedName) {
+      pushNotification({
+        type: 'community',
+        content: 'Community name is required.'
+      });
+      return;
+    }
+
+    if (communities.some((community) => String(community?.name || '').trim().toLowerCase() === normalizedName)) {
+      pushNotification({
+        type: 'community',
+        content: 'Community name already taken.'
+      });
+      return;
+    }
+
     try {
       const payload = {
-        name: newCommunityName,
+        name: trimmedName,
         description: newCommunityDesc,
         category: newCommunityCategory
       };
@@ -687,6 +1278,10 @@ const HomePage = () => {
       setNewCommunityCoverImage('');
       loadCommunities();
     } catch (error) {
+      pushNotification({
+        type: 'community',
+        content: getApiErrorMessage(error, 'Could not create this community right now.')
+      });
       console.error('Failed to create community', error);
     }
   };
@@ -734,9 +1329,28 @@ const HomePage = () => {
 
   const handleCreateGroup = async (e) => {
     e.preventDefault();
+    const trimmedName = newGroupName.trim();
+    const normalizedName = trimmedName.toLowerCase();
+
+    if (!trimmedName) {
+      pushNotification({
+        type: 'group',
+        content: 'Group name is required.'
+      });
+      return;
+    }
+
+    if (groups.some((group) => String(group?.name || '').trim().toLowerCase() === normalizedName)) {
+      pushNotification({
+        type: 'group',
+        content: 'Group name already taken.'
+      });
+      return;
+    }
+
     try {
       const payload = {
-        name: newGroupName,
+        name: trimmedName,
         description: newGroupDesc
       };
       if (newGroupCoverImage.trim()) {
@@ -757,6 +1371,10 @@ const HomePage = () => {
       setNewGroupProfileImage('');
       loadGroups();
     } catch (error) {
+      pushNotification({
+        type: 'group',
+        content: getApiErrorMessage(error, 'Could not create this group right now.')
+      });
       console.error('Failed to create group', error);
     }
   };
@@ -805,8 +1423,7 @@ const HomePage = () => {
   const openGroupDetails = async (groupId) => {
     try {
       if (allUsers.length === 0) {
-        const users = await getUsers();
-        setAllUsers(users);
+        await loadContactUsers();
       }
       const data = await getGroupDetails(groupId);
       setSelectedGroup(data);
@@ -827,8 +1444,7 @@ const HomePage = () => {
   const openCommunityDetails = async (communityId) => {
     try {
       if (allUsers.length === 0) {
-        const users = await getUsers();
-        setAllUsers(users);
+        await loadContactUsers();
       }
       const data = await getCommunityDetails(communityId);
       setSelectedCommunity(data);
@@ -852,6 +1468,10 @@ const HomePage = () => {
       setSelectedMemberToAdd('');
       loadGroups();
     } catch (error) {
+      pushNotification({
+        type: 'group',
+        content: getApiErrorMessage(error, 'Could not add this member right now.')
+      });
       console.error('Failed to add group member', error);
     }
   };
@@ -1092,23 +1712,20 @@ const HomePage = () => {
 
   const handleCreateEvent = async (e) => {
     e.preventDefault();
-    const minDate = getCurrentMinuteDate();
-    const eventDate = new Date(newEventDate);
-    if (Number.isNaN(eventDate.getTime())) {
-      setEventDateError('Please choose a valid event date and time.');
-      return;
-    }
-    if (eventDate < minDate) {
-      setEventDateError('Past dates are not allowed.');
+    const rangeError = buildEventRangeError(newEventDate, newEventEndDate);
+    if (rangeError) {
+      setEventDateError(rangeError);
       return;
     }
     setEventDateError('');
+    setEventCreateError('');
 
     try {
       const eventData = {
-        title: newEventTitle,
-        description: newEventDesc,
+        title: newEventTitle.trim(),
+        description: newEventDesc.trim(),
         date: newEventDate,
+        endDate: newEventEndDate || newEventDate,
         location: newEventLocation,
         coverImage: newEventCoverImage,
         maxAttendees: newEventMaxAttendees ? parseInt(newEventMaxAttendees, 10) : 0
@@ -1126,12 +1743,15 @@ const HomePage = () => {
       setNewEventTitle('');
       setNewEventDesc('');
       setNewEventDate('');
+      setNewEventEndDate('');
+      setNewEventLocation('Online');
       setNewEventCoverImage('');
       setNewEventMaxAttendees('');
       setNewEventVisibility('contacts');
       setNewEventContextId('');
       loadEvents();
     } catch (error) {
+      setEventCreateError(getApiErrorMessage(error, 'Could not create this event right now.'));
       console.error('Failed to create event', error);
     }
   };
@@ -1141,6 +1761,10 @@ const HomePage = () => {
       await rsvpEvent(id);
       loadEvents();
     } catch (error) {
+      pushNotification({
+        type: 'event',
+        content: error.response?.data?.message || 'Could not update your RSVP.'
+      });
       console.error('Failed to RSVP', error);
     }
   };
@@ -1166,14 +1790,6 @@ const HomePage = () => {
       offMessagesRead();
     };
   }, [selectedChat]);
-
-  // Emit user online status on mount
-  useEffect(() => {
-    const userId = localStorage.getItem('userId');
-    if (userId) {
-      emitUserOnline(userId);
-    }
-  }, []);
 
   // Listen for online status changes
   useEffect(() => {
@@ -1214,6 +1830,10 @@ const HomePage = () => {
     try {
       const data = await getChats();
       setChats(data);
+      setSelectedChat((prev) => {
+        if (!prev?._id) return prev;
+        return data.find((chat) => chat._id === prev._id) || prev;
+      });
     } catch (error) {
       console.error('Failed to load chats:', error);
     }
@@ -1239,6 +1859,471 @@ const HomePage = () => {
       console.error('Failed to load scheduled messages:', error);
     }
   };
+
+  const attachStreamToElement = (videoElementRef, stream) => {
+    if (videoElementRef.current) {
+      videoElementRef.current.srcObject = stream || null;
+    }
+  };
+
+  const stopMediaStream = (stream) => {
+    stream?.getTracks?.().forEach((track) => track.stop());
+  };
+
+  const clearPeerConnection = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.ontrack = null;
+      peerConnectionRef.current.onicecandidate = null;
+      peerConnectionRef.current.onconnectionstatechange = null;
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+
+    stopMediaStream(remoteStreamRef.current);
+    remoteStreamRef.current = null;
+    attachStreamToElement(remoteVideoRef, null);
+    pendingIceCandidatesRef.current = [];
+  };
+
+  const clearLocalMedia = () => {
+    stopMediaStream(localStreamRef.current);
+    localStreamRef.current = null;
+    attachStreamToElement(localVideoRef, null);
+  };
+
+  const resetCallResources = () => {
+    clearPeerConnection();
+    clearLocalMedia();
+  };
+
+  const finishCall = (notificationMessage = '') => {
+    resetCallResources();
+    setCallState(INITIAL_CALL_STATE);
+    if (notificationMessage) {
+      pushNotification({
+        type: 'call',
+        content: notificationMessage
+      });
+    }
+  };
+
+  const flushPendingIceCandidates = async (peerConnection) => {
+    if (!peerConnection?.remoteDescription) return;
+
+    const queuedCandidates = [...pendingIceCandidatesRef.current];
+    pendingIceCandidatesRef.current = [];
+
+    for (const candidate of queuedCandidates) {
+      try {
+        await peerConnection.addIceCandidate(candidate);
+      } catch (error) {
+        console.error('Failed to apply queued ICE candidate:', error);
+      }
+    }
+  };
+
+  const ensureLocalMediaStream = async ({ allowReceiveOnlyFallback = false } = {}) => {
+    if (!isBrowserCallSupported()) {
+      throw new Error('Video calls are not supported in this browser.');
+    }
+
+    if (localStreamRef.current) {
+      return localStreamRef.current;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true
+      });
+
+      localStreamRef.current = stream;
+      attachStreamToElement(localVideoRef, stream);
+      setCallState((prev) => ({
+        ...prev,
+        isMuted: false,
+        isCameraOff: false,
+        isReceiveOnly: false,
+        error: ''
+      }));
+
+      return stream;
+    } catch (error) {
+      if (allowReceiveOnlyFallback && error?.name === 'NotReadableError') {
+        const fallbackStream = new MediaStream();
+        localStreamRef.current = fallbackStream;
+        attachStreamToElement(localVideoRef, fallbackStream);
+        setCallState((prev) => ({
+          ...prev,
+          isMuted: true,
+          isCameraOff: true,
+          isReceiveOnly: true,
+          error: 'Camera or microphone is already being used in another browser/app. Joined in receive-only mode.'
+        }));
+        return fallbackStream;
+      }
+
+      throw error;
+    }
+  };
+
+  const createPeerConnection = (chatId) => {
+    if (peerConnectionRef.current) {
+      return peerConnectionRef.current;
+    }
+
+    const peerConnection = new RTCPeerConnection(WEBRTC_CONFIGURATION);
+    const localStream = localStreamRef.current;
+
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+    }
+
+    const remoteStream = new MediaStream();
+    remoteStreamRef.current = remoteStream;
+    attachStreamToElement(remoteVideoRef, remoteStream);
+
+    peerConnection.ontrack = (event) => {
+      const remoteMediaStream = event.streams?.[0];
+      if (remoteMediaStream) {
+        remoteStreamRef.current = remoteMediaStream;
+        attachStreamToElement(remoteVideoRef, remoteMediaStream);
+        setCallState((prev) => (prev.chatId === chatId ? { ...prev } : prev));
+        return;
+      }
+
+      if (event.track) {
+        remoteStream.addTrack(event.track);
+        attachStreamToElement(remoteVideoRef, remoteStream);
+        setCallState((prev) => (prev.chatId === chatId ? { ...prev } : prev));
+      }
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (!event.candidate) return;
+
+      emitCallIceCandidate({
+        chatId,
+        candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+        fromUserId: getCurrentUserId(),
+        fromUserName: currentUserRef.current?.name || 'User'
+      });
+    };
+
+    peerConnection.onconnectionstatechange = () => {
+      const { connectionState } = peerConnection;
+
+      if (connectionState === 'connected') {
+        setCallState((prev) => (prev.chatId === chatId ? { ...prev, status: 'connected', error: '' } : prev));
+        return;
+      }
+
+      if (connectionState === 'failed' || connectionState === 'disconnected') {
+        finishCall('Call connection was lost.');
+      }
+    };
+
+    peerConnectionRef.current = peerConnection;
+    return peerConnection;
+  };
+
+  const startOutgoingOffer = async (chatId) => {
+    const localStream = await ensureLocalMediaStream();
+    const peerConnection = createPeerConnection(chatId);
+
+    if (peerConnection.getSenders().length === 0) {
+      localStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localStream);
+      });
+    }
+
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+
+    emitCallOffer({
+      chatId,
+      offer,
+      fromUserId: getCurrentUserId(),
+      fromUserName: currentUserRef.current?.name || 'User'
+    });
+  };
+
+  const handleStartVideoCall = async () => {
+    if (!selectedChat || selectedChat.isGroup) return;
+
+    const otherUser = getDirectChatOtherUser(selectedChat);
+    const otherUserId = getEntityId(otherUser?._id || otherUser?.id || otherUser);
+
+    if (!otherUserId) return;
+
+    if (!isBrowserCallSupported()) {
+      pushNotification({
+        type: 'call',
+        content: 'This browser does not support video calling.'
+      });
+      return;
+    }
+
+    if (!isUserOnline(otherUserId)) {
+      pushNotification({
+        type: 'call',
+        content: `${otherUser?.name || 'This contact'} is offline right now.`
+      });
+      return;
+    }
+
+    if (activeCallRef.current.status !== 'idle') {
+      pushNotification({
+        type: 'call',
+        content: 'Finish the current call before starting another one.'
+      });
+      return;
+    }
+
+    try {
+      await ensureLocalMediaStream();
+      setCallState({
+        ...INITIAL_CALL_STATE,
+        status: 'outgoing',
+        chatId: selectedChat._id,
+        chatName: getChatName(selectedChat),
+        fromUserId: getCurrentUserId(),
+        fromUserName: currentUserRef.current?.name || 'User'
+      });
+      emitCallRing({
+        chatId: selectedChat._id,
+        fromUserId: getCurrentUserId(),
+        fromUserName: currentUserRef.current?.name || 'User'
+      });
+    } catch (error) {
+      console.error('Failed to start video call:', error);
+      finishCall(error?.message || 'Could not access your camera or microphone.');
+    }
+  };
+
+  const handleAcceptIncomingCall = async () => {
+    const activeCall = activeCallRef.current;
+    if (activeCall.status !== 'incoming' || !activeCall.chatId) return;
+
+    try {
+      await ensureLocalMediaStream({ allowReceiveOnlyFallback: true });
+
+      const matchingChat = chatsRef.current.find((chat) => chat._id === activeCall.chatId);
+      if (matchingChat) {
+        setActiveTab('chats');
+        setSelectedChat(matchingChat);
+      }
+
+      setCallState((prev) => ({ ...prev, status: 'connecting', error: '' }));
+      emitCallAccept({
+        chatId: activeCall.chatId,
+        fromUserId: getCurrentUserId(),
+        fromUserName: currentUserRef.current?.name || 'User'
+      });
+    } catch (error) {
+      console.error('Failed to accept call:', error);
+      emitCallDecline({
+        chatId: activeCall.chatId,
+        fromUserId: getCurrentUserId(),
+        fromUserName: currentUserRef.current?.name || 'User'
+      });
+      const errorMessage = error?.name === 'NotReadableError'
+        ? 'Your camera or microphone is busy in another app or browser.'
+        : (error?.message || 'Could not access your camera or microphone.');
+      finishCall(errorMessage);
+    }
+  };
+
+  const handleDeclineIncomingCall = () => {
+    const activeCall = activeCallRef.current;
+    if (activeCall.status !== 'incoming' || !activeCall.chatId) return;
+
+    emitCallDecline({
+      chatId: activeCall.chatId,
+      fromUserId: getCurrentUserId(),
+      fromUserName: currentUserRef.current?.name || 'User'
+    });
+    finishCall();
+  };
+
+  const handleEndCall = () => {
+    const activeCall = activeCallRef.current;
+    if (activeCall.status === 'idle' || !activeCall.chatId) return;
+
+    emitCallEnd({
+      chatId: activeCall.chatId,
+      fromUserId: getCurrentUserId(),
+      fromUserName: currentUserRef.current?.name || 'User'
+    });
+    finishCall();
+  };
+
+  const handleToggleCallMute = () => {
+    const audioTrack = localStreamRef.current?.getAudioTracks?.()?.[0];
+    if (!audioTrack) return;
+
+    const nextMuted = !activeCallRef.current.isMuted;
+    audioTrack.enabled = !nextMuted;
+    setCallState((prev) => ({ ...prev, isMuted: nextMuted }));
+  };
+
+  const handleToggleCallCamera = () => {
+    const videoTrack = localStreamRef.current?.getVideoTracks?.()?.[0];
+    if (!videoTrack) return;
+
+    const nextCameraOff = !activeCallRef.current.isCameraOff;
+    videoTrack.enabled = !nextCameraOff;
+    setCallState((prev) => ({ ...prev, isCameraOff: nextCameraOff }));
+  };
+
+  useEffect(() => {
+    const handleIncomingCallEvent = ({ chatId, fromUserId, fromUserName }) => {
+      if (!chatId || !fromUserId) return;
+
+      const activeCall = activeCallRef.current;
+      if (activeCall.status !== 'idle') {
+        emitCallBusy({
+          chatId,
+          fromUserId: getCurrentUserId(),
+          fromUserName: currentUserRef.current?.name || 'User'
+        });
+        return;
+      }
+
+      const matchingChat = chatsRef.current.find((chat) => chat._id === chatId);
+      setCallState({
+        ...INITIAL_CALL_STATE,
+        status: 'incoming',
+        chatId,
+        chatName: matchingChat ? getChatName(matchingChat) : (fromUserName || 'Contact'),
+        fromUserId,
+        fromUserName: fromUserName || ''
+      });
+    };
+
+    const handleCallAcceptedEvent = async ({ chatId }) => {
+      const activeCall = activeCallRef.current;
+      if (activeCall.chatId !== chatId || activeCall.status !== 'outgoing') return;
+
+      setCallState((prev) => (prev.chatId === chatId ? { ...prev, status: 'connecting', error: '' } : prev));
+
+      try {
+        await startOutgoingOffer(chatId);
+      } catch (error) {
+        console.error('Failed to create offer:', error);
+        emitCallEnd({
+          chatId,
+          fromUserId: getCurrentUserId(),
+          fromUserName: currentUserRef.current?.name || 'User'
+        });
+        finishCall('Could not start the video call.');
+      }
+    };
+
+    const handleCallDeclinedEvent = ({ chatId, fromUserName }) => {
+      if (activeCallRef.current.chatId !== chatId) return;
+      finishCall(`${fromUserName || 'The other user'} declined the call.`);
+    };
+
+    const handleCallBusyEvent = ({ chatId, fromUserName }) => {
+      if (activeCallRef.current.chatId !== chatId) return;
+      finishCall(`${fromUserName || 'The other user'} is already on another call.`);
+    };
+
+    const handleCallOfferEvent = async ({ chatId, offer }) => {
+      const activeCall = activeCallRef.current;
+      if (!offer || activeCall.chatId !== chatId || activeCall.status === 'idle') return;
+
+      try {
+        await ensureLocalMediaStream();
+        const peerConnection = createPeerConnection(chatId);
+        await peerConnection.setRemoteDescription(offer);
+        await flushPendingIceCandidates(peerConnection);
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        emitCallAnswer({
+          chatId,
+          answer,
+          fromUserId: getCurrentUserId(),
+          fromUserName: currentUserRef.current?.name || 'User'
+        });
+
+        setCallState((prev) => (prev.chatId === chatId ? { ...prev, status: 'connecting', error: '' } : prev));
+      } catch (error) {
+        console.error('Failed to process offer:', error);
+        emitCallEnd({
+          chatId,
+          fromUserId: getCurrentUserId(),
+          fromUserName: currentUserRef.current?.name || 'User'
+        });
+        finishCall('Could not connect this call.');
+      }
+    };
+
+    const handleCallAnswerEvent = async ({ chatId, answer }) => {
+      if (!answer || activeCallRef.current.chatId !== chatId || !peerConnectionRef.current) return;
+
+      try {
+        await peerConnectionRef.current.setRemoteDescription(answer);
+        await flushPendingIceCandidates(peerConnectionRef.current);
+        setCallState((prev) => (prev.chatId === chatId ? { ...prev, status: 'connecting', error: '' } : prev));
+      } catch (error) {
+        console.error('Failed to process answer:', error);
+        finishCall('Could not complete the video call connection.');
+      }
+    };
+
+    const handleCallIceCandidateEvent = async ({ chatId, candidate }) => {
+      if (!candidate || activeCallRef.current.chatId !== chatId) return;
+
+      const iceCandidate = new RTCIceCandidate(candidate);
+      const peerConnection = peerConnectionRef.current;
+
+      if (!peerConnection || !peerConnection.remoteDescription) {
+        pendingIceCandidatesRef.current.push(iceCandidate);
+        return;
+      }
+
+      try {
+        await peerConnection.addIceCandidate(iceCandidate);
+      } catch (error) {
+        console.error('Failed to add ICE candidate:', error);
+      }
+    };
+
+    const handleCallEndedEvent = ({ chatId, fromUserName }) => {
+      if (activeCallRef.current.chatId !== chatId) return;
+      finishCall(`${fromUserName || 'The other user'} ended the call.`);
+    };
+
+    onIncomingCall(handleIncomingCallEvent);
+    onCallAccepted(handleCallAcceptedEvent);
+    onCallDeclined(handleCallDeclinedEvent);
+    onCallBusy(handleCallBusyEvent);
+    onCallOffer(handleCallOfferEvent);
+    onCallAnswer(handleCallAnswerEvent);
+    onCallIceCandidate(handleCallIceCandidateEvent);
+    onCallEnded(handleCallEndedEvent);
+
+    return () => {
+      offIncomingCall(handleIncomingCallEvent);
+      offCallAccepted(handleCallAcceptedEvent);
+      offCallDeclined(handleCallDeclinedEvent);
+      offCallBusy(handleCallBusyEvent);
+      offCallOffer(handleCallOfferEvent);
+      offCallAnswer(handleCallAnswerEvent);
+      offCallIceCandidate(handleCallIceCandidateEvent);
+      offCallEnded(handleCallEndedEvent);
+    };
+  }, []);
+
+  useEffect(() => () => {
+    resetCallResources();
+  }, []);
 
   const formatScheduleTime = (value) => {
     if (!value) return '';
@@ -1278,7 +2363,7 @@ const HomePage = () => {
   };
 
   const handleOpenScheduleModal = () => {
-    if (!selectedChat) return;
+    if (!selectedChat || isChatReadOnlyForCurrentUser(selectedChat)) return;
     setScheduleDateError('');
     setScheduleForm({
       content: newMessage || '',
@@ -1293,7 +2378,7 @@ const HomePage = () => {
 
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedChat) return;
+    if (!selectedChat || isChatReadOnlyForCurrentUser(selectedChat)) return;
     if (!scheduleForm.content.trim() || !scheduleForm.scheduledFor) return;
 
     const validationError = validateScheduleDates({
@@ -1362,6 +2447,7 @@ const HomePage = () => {
   };
 
   const handleShareLocation = () => {
+    if (isChatReadOnlyForCurrentUser(selectedChat)) return;
     if (!navigator.geolocation) {
       alert("Geolocation is not supported by your browser");
       return;
@@ -1381,7 +2467,6 @@ const HomePage = () => {
         try {
           const message = await sendMessage(selectedChat._id, locationMessage);
           setMessages(prev => [...prev, message]);
-          sendMessageSocket(selectedChat._id, message);
           loadChats();
         } catch (error) {
           console.error('Failed to send location:', error);
@@ -1396,7 +2481,12 @@ const HomePage = () => {
 
   const handleFileSelected = async (event) => {
     const file = event.target.files?.[0];
-    if (!file || !selectedChat) return;
+    if (!file || !selectedChat || isChatReadOnlyForCurrentUser(selectedChat)) {
+      if (event?.target) {
+        event.target.value = '';
+      }
+      return;
+    }
     setUploadingAttachment(true);
     try {
       const uploaded = await uploadFile(file);
@@ -1410,6 +2500,7 @@ const HomePage = () => {
   };
 
   const handleStartReply = (msg) => {
+    if (isChatReadOnlyForCurrentUser(selectedChat)) return;
     setReplyingTo(msg);
     setEditingMessage(null);
   };
@@ -1470,7 +2561,7 @@ const HomePage = () => {
 
   const handleCreatePoll = async (e) => {
     e.preventDefault();
-    if (!selectedChat) return;
+    if (!selectedChat || isChatReadOnlyForCurrentUser(selectedChat)) return;
     if (!selectedChat.isGroup) {
       alert('Polls are only available in group chats.');
       return;
@@ -1489,7 +2580,6 @@ const HomePage = () => {
         }
       });
       setMessages((prev) => [...prev, message]);
-      sendMessageSocket(selectedChat._id, message);
       setShowPollModal(false);
       setPollQuestion('');
       setPollOptions(['', '']);
@@ -1512,7 +2602,7 @@ const HomePage = () => {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!selectedChat) return;
+    if (!selectedChat || isChatReadOnlyForCurrentUser(selectedChat)) return;
 
     if (editingMessage) {
       if (!newMessage.trim()) return;
@@ -1547,9 +2637,6 @@ const HomePage = () => {
           chatMessagesContainerRef.current.scrollTop = chatMessagesContainerRef.current.scrollHeight;
         }
       });
-
-      // Send via socket for real-time delivery
-      sendMessageSocket(selectedChat._id, message);
 
       // Refresh chat list
       loadChats();
@@ -1613,33 +2700,194 @@ const HomePage = () => {
     return (community.admins || []).some((admin) => (admin?._id || admin) === userId);
   };
 
+  const isCurrentUserCommunityMember = (community) => {
+    const userId = localStorage.getItem('userId');
+    if (!community || !userId) return false;
+    if (community.isMember === true) return true;
+    if (community.role === 'admin' || community.role === 'member') return true;
+    return (community.members || []).some((member) => (member?._id || member) === userId);
+  };
+
+  const getCommunityForChat = (chat) => {
+    if (!chat) return null;
+
+    const chatId = getEntityId(chat);
+    const communityId = getEntityId(chat.community);
+
+    if (selectedCommunity) {
+      const selectedCommunityId = getEntityId(selectedCommunity);
+      const selectedAnnouncementChatId = getEntityId(selectedCommunity.announcementChat);
+      if (selectedCommunityId === communityId || (selectedAnnouncementChatId && selectedAnnouncementChatId === chatId)) {
+        return selectedCommunity;
+      }
+    }
+
+    const communityFromList = communities.find((community) => {
+      const listCommunityId = getEntityId(community);
+      const announcementChatId = getEntityId(community?.announcementChat);
+      return listCommunityId === communityId || (announcementChatId && announcementChatId === chatId);
+    });
+
+    if (communityFromList) {
+      return communityFromList;
+    }
+
+    return chat.community && typeof chat.community === 'object' ? chat.community : null;
+  };
+
+  const isCommunityAnnouncementChat = (chat) => Boolean(chat && (chat.kind === 'community-announcement' || chat.community));
+
+  const isChatReadOnlyForCurrentUser = (chat) => {
+    if (!isCommunityAnnouncementChat(chat)) return false;
+    return !isCurrentUserCommunityAdmin(getCommunityForChat(chat));
+  };
+
+  const getDirectChatOtherUser = (chat) => {
+    if (!chat || chat.isGroup) return null;
+    const currentUserId = getCurrentUserId();
+    return chat.participants?.find((participant) => {
+      const participantId = getEntityId(participant?._id || participant?.id || participant);
+      return participantId && participantId !== currentUserId;
+    }) || null;
+  };
+
   const getChatName = (chat) => {
     if (chat?.isGroup) return chat.name || 'Group Chat';
-    const currentUserId = localStorage.getItem('userId');
-    const otherUser = chat?.participants?.find(p => p?._id?.toString() !== currentUserId && p?._id !== currentUserId);
+    const otherUser = getDirectChatOtherUser(chat);
     return otherUser?.name || 'Unknown User';
   };
 
   const getChatAvatar = (chat) => {
     if (!chat?.isGroup) {
-      const currentUserId = localStorage.getItem('userId');
-      const otherUser = chat?.participants?.find((p) => p?._id?.toString() !== currentUserId && p?._id !== currentUserId);
+      const otherUser = getDirectChatOtherUser(chat);
       if (otherUser?.profilePic) {
-        return <img src={getAvatarUrl(otherUser.profilePic)} alt={otherUser?.name || 'User'} className="avatar-img" />;
+        return (
+          <SmartImage
+            srcPath={otherUser.profilePic}
+            alt={otherUser?.name || 'User'}
+            className="avatar-img"
+            fallback={otherUser?.name?.charAt(0)?.toUpperCase() || 'U'}
+          />
+        );
       }
     }
     const name = getChatName(chat);
     return name ? name.charAt(0).toUpperCase() : '?';
   };
 
+  const isUserOnline = (userId) => {
+    if (!userId) return false;
+    const normalizedUserId = String(userId);
+    for (const onlineUserId of onlineUsers) {
+      if (String(onlineUserId) === normalizedUserId) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const isBrowserCallSupported = () => (
+    typeof window !== 'undefined'
+    && typeof window.RTCPeerConnection !== 'undefined'
+    && typeof navigator !== 'undefined'
+    && Boolean(navigator.mediaDevices?.getUserMedia)
+  );
+
+  const getCallStatusLabel = (status) => {
+    switch (status) {
+      case 'incoming':
+        return 'Incoming video call';
+      case 'outgoing':
+        return 'Calling...';
+      case 'connecting':
+        return 'Connecting...';
+      case 'connected':
+        return 'Video call live';
+      default:
+        return '';
+    }
+  };
+
   useEffect(() => {
-    const handleMouseMove = (e) => {
-      setCursorPos({ x: e.clientX, y: e.clientY });
+    const cursorElement = cursorRef.current;
+    if (!cursorEnabled || !cursorElement) {
+      if (cursorFrameRef.current) {
+        cancelAnimationFrame(cursorFrameRef.current);
+        cursorFrameRef.current = null;
+      }
+      return undefined;
+    }
+
+    const target = cursorTargetRef.current;
+    const current = cursorCurrentRef.current;
+    target.size = cursorSize;
+
+    const syncPosition = (event) => {
+      target.x = event.clientX;
+      target.y = event.clientY;
+      target.opacity = 1;
+
+      if (current.opacity === 0) {
+        current.x = event.clientX;
+        current.y = event.clientY;
+        current.size = target.size;
+        current.opacity = 1;
+      }
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
+    const hideCursor = () => {
+      target.opacity = 0;
+      cursorElement.classList.remove('is-pressed');
+    };
+
+    const handlePointerDown = () => {
+      target.size = Math.max(28, cursorSize - 8);
+      cursorElement.classList.add('is-pressed');
+    };
+
+    const handlePointerUp = () => {
+      target.size = cursorSize;
+      cursorElement.classList.remove('is-pressed');
+    };
+
+    const animateCursor = () => {
+      current.x += (target.x - current.x) * 0.22;
+      current.y += (target.y - current.y) * 0.22;
+      current.size += (target.size - current.size) * 0.18;
+      current.opacity += (target.opacity - current.opacity) * 0.2;
+
+      const safeSize = Math.max(0, current.size);
+      const halfSize = safeSize / 2;
+
+      cursorElement.style.transform = `translate3d(${current.x - halfSize}px, ${current.y - halfSize}px, 0)`;
+      cursorElement.style.width = `${safeSize}px`;
+      cursorElement.style.height = `${safeSize}px`;
+      cursorElement.style.opacity = `${Math.max(0, Math.min(1, current.opacity))}`;
+
+      cursorFrameRef.current = window.requestAnimationFrame(animateCursor);
+    };
+
+    cursorFrameRef.current = window.requestAnimationFrame(animateCursor);
+    window.addEventListener('pointermove', syncPosition, { passive: true });
+    window.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    window.addEventListener('pointerup', handlePointerUp, { passive: true });
+    window.addEventListener('pointercancel', handlePointerUp, { passive: true });
+    window.addEventListener('blur', hideCursor);
+    document.addEventListener('mouseleave', hideCursor);
+
+    return () => {
+      if (cursorFrameRef.current) {
+        cancelAnimationFrame(cursorFrameRef.current);
+        cursorFrameRef.current = null;
+      }
+      window.removeEventListener('pointermove', syncPosition);
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      window.removeEventListener('blur', hideCursor);
+      document.removeEventListener('mouseleave', hideCursor);
+    };
+  }, [cursorEnabled, cursorSize]);
 
   const handleTabClick = (tab) => {
     setActiveTab(tab);
@@ -1653,38 +2901,99 @@ const HomePage = () => {
     }, 50);
   };
 
-  // Load user profile
-  useEffect(() => {
-    const loadUserProfile = async () => {
-      try {
-        const { user } = await getUserProfile();
-        setCurrentUser(user);
-        setEditName(user.name || '');
-        setEditUsername(user.username || '');
-        setEditBio(user.bio || '');
-        setEditWhoAmI(user.whoAmI || '');
-        setEditAboutInfo(user.aboutInfo || '');
-        setEditEducation(user.education || '');
-        setEditInterests((user.interests || []).join(', '));
-        setOnboardingForm({
-          name: user.name || '',
-          whoAmI: user.whoAmI || '',
-          aboutInfo: user.aboutInfo || '',
-          education: user.education || '',
-          interests: (user.interests || []).join(', ')
-        });
-        setShowOnboarding(!user.onboardingCompleted);
-      } catch (error) {
-        console.error('Failed to load user profile:', error);
-      }
-    };
-    loadUserProfile();
-  }, []);
+  const loadUserProfile = async () => {
+    try {
+      const { user } = await getUserProfile();
+      setCurrentUser(user);
+      setEditName(user.name || '');
+      setEditUsername(user.username || '');
+      setEditBio(user.bio || '');
+      setEditWhoAmI(user.whoAmI || '');
+      setEditAboutInfo(user.aboutInfo || '');
+      setEditEducation(user.education || '');
+      setEditInterests((user.interests || []).join(', '));
+      setOnboardingForm({
+        name: user.name || '',
+        whoAmI: user.whoAmI || '',
+        aboutInfo: user.aboutInfo || '',
+        education: user.education || '',
+        interests: (user.interests || []).join(', ')
+      });
+      setShowOnboarding(!user.onboardingCompleted);
+    } catch (error) {
+      console.error('Failed to load user profile:', error);
+    }
+  };
 
   const getAvatarUrl = (path) => {
-    if (!path) return '';
-    if (path.startsWith('http')) return path;
-    return `${API_BASE_URL}${path}`;
+    return buildMediaCandidates(path)[0] || '';
+  };
+
+  const isImageSource = (value) => {
+    const normalizedValue = normalizeMediaPath(value);
+    if (!normalizedValue) return false;
+    return /^(?:https?:|data:|blob:)/i.test(normalizedValue)
+      || normalizedValue.startsWith(API_BASE_URL)
+      || normalizedValue.startsWith(DEFAULT_API_BASE_URL)
+      || normalizedValue.startsWith('/')
+      || normalizedValue.startsWith('uploads/')
+      || normalizedValue.startsWith('images/')
+      || /\.(?:png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i.test(normalizedValue);
+  };
+
+  const renderEntityAvatar = (imagePath, icon, label, alt) => {
+    if (isImageSource(imagePath)) {
+      return <SmartImage srcPath={imagePath} alt={alt} fallback={label?.charAt(0)?.toUpperCase() || '?'} />;
+    }
+    if (isImageSource(icon)) {
+      return <SmartImage srcPath={icon} alt={alt} fallback={label?.charAt(0)?.toUpperCase() || '?'} />;
+    }
+    return icon || label?.charAt(0)?.toUpperCase() || '?';
+  };
+
+  const getProfileSummary = (user) => (
+    user?.bio
+    || user?.whoAmI
+    || user?.aboutInfo
+    || user?.education
+    || ''
+  );
+
+  const handleOpenProfilePreview = async (userId) => {
+    const resolvedUserId = userId?._id || userId?.id || userId;
+    if (!resolvedUserId) return;
+
+    const currentUserId = currentUser?._id || currentUser?.id;
+    if (currentUserId && resolvedUserId.toString() === currentUserId.toString()) {
+      setProfilePreview({
+        ...currentUser,
+        _id: currentUserId,
+        id: currentUserId,
+        relationship: 'self',
+        friendsCount: currentUser?.friendsCount || 0
+      });
+      setProfilePreviewError('');
+      setProfilePreviewLoading(false);
+      return;
+    }
+
+    setProfilePreviewLoading(true);
+    setProfilePreviewError('');
+    try {
+      const { user } = await getPublicUserProfile(resolvedUserId);
+      setProfilePreview(user);
+    } catch (error) {
+      setProfilePreviewError(error.response?.data?.message || 'Could not load this profile right now.');
+      setProfilePreview(null);
+    } finally {
+      setProfilePreviewLoading(false);
+    }
+  };
+
+  const handleCloseProfilePreview = () => {
+    setProfilePreview(null);
+    setProfilePreviewError('');
+    setProfilePreviewLoading(false);
   };
 
   const renderMessageBody = (msg, { hasMention, pollTotalVotes, pollUserVote }) => {
@@ -1758,7 +3067,12 @@ const HomePage = () => {
               const fileUrl = getAvatarUrl(file.url);
               if ((file.mimeType || '').startsWith('image/')) {
                 return (
-                  <img key={file.url} src={fileUrl} alt={file.fileName || 'attachment'} className="file-image" />
+                  <SmartImage
+                    key={file.url}
+                    srcPath={file.url}
+                    alt={file.fileName || 'attachment'}
+                    className="file-image"
+                  />
                 );
               }
               return (
@@ -1787,14 +3101,33 @@ const HomePage = () => {
     navigate('/login');
   };
 
-  const loadFriendsAndRequests = async () => {
+  const loadContactUsers = async () => {
+    setPeopleDirectoryLoading(true);
     try {
-      const users = await getUsers();
+      const users = await getFriends();
       setAllUsers(users);
-      const requests = await getFriendRequests();
+      return users;
+    } catch (error) {
+      console.error('Failed to load contacts:', error);
+      return [];
+    } finally {
+      setPeopleDirectoryLoading(false);
+    }
+  };
+
+  const loadFriendsAndRequests = async () => {
+    setPeopleDirectoryLoading(true);
+    try {
+      const [users, requests] = await Promise.all([
+        getFriends(),
+        getFriendRequests()
+      ]);
+      setAllUsers(users);
       setFriendRequests(requests);
     } catch (error) {
       console.error('Failed to load users/requests:', error);
+    } finally {
+      setPeopleDirectoryLoading(false);
     }
   };
 
@@ -1904,9 +3237,9 @@ const HomePage = () => {
   const handleNewChat = async () => {
     setChatActionError('');
     setSearchQuery('');
+    setActiveChatModalTab('contacts');
     try {
-      const users = await getUsers();
-      setAllUsers(users);
+      await loadFriendsAndRequests();
     } catch (error) {
       console.error('Failed to load users:', error);
     }
@@ -1934,6 +3267,7 @@ const HomePage = () => {
   // Open group chat modal
   const handleNewGroupChat = async () => {
     await loadFriendsAndRequests();
+    setSearchQuery('');
     setShowGroupChatModal(true);
   };
 
@@ -2004,11 +3338,56 @@ const HomePage = () => {
     return chatName.includes(query) || lastMessage.includes(query);
   });
 
+  const selectedDirectChatUser = getDirectChatOtherUser(selectedChat);
+  const selectedDirectChatUserId = getEntityId(selectedDirectChatUser?._id || selectedDirectChatUser?.id || selectedDirectChatUser);
+  const canStartSelectedVideoCall = Boolean(
+    selectedChat
+    && !selectedChat.isGroup
+    && selectedDirectChatUserId
+    && isBrowserCallSupported()
+    && isUserOnline(selectedDirectChatUserId)
+    && callState.status === 'idle'
+  );
+  const selectedChatVideoCallTitle = !selectedChat || selectedChat.isGroup
+    ? 'Video calls are available in direct chats'
+    : !isBrowserCallSupported()
+      ? 'This browser does not support video calling'
+      : !isUserOnline(selectedDirectChatUserId)
+        ? 'This contact is offline'
+        : callState.status !== 'idle'
+          ? 'Finish the current call first'
+          : 'Start video call';
+  const activeCallChat = chats.find((chat) => chat._id === callState.chatId)
+    || (selectedChat?._id === callState.chatId ? selectedChat : null);
+  const activeCallName = activeCallChat
+    ? getChatName(activeCallChat)
+    : (callState.chatName || callState.fromUserName || 'Contact');
+
   const filteredDiscoverUsers = discoverUsers
     .filter((user) =>
       (user.name?.toLowerCase() || '').includes((searchQuery || '').toLowerCase()) ||
       (user.username?.toLowerCase() || '').includes((searchQuery || '').toLowerCase())
     );
+
+  const selectedGroupMemberIds = new Set(
+    (selectedGroup?.members || []).map((member) => getEntityId(member)).filter(Boolean)
+  );
+  const eligibleGroupUsers = [];
+  const eligibleGroupUserIds = new Set();
+
+  const appendEligibleGroupUsers = (users = []) => {
+    users.forEach((user) => {
+      const userId = getEntityId(user);
+      if (!userId || selectedGroupMemberIds.has(userId) || eligibleGroupUserIds.has(userId)) {
+        return;
+      }
+      eligibleGroupUserIds.add(userId);
+      eligibleGroupUsers.push(user);
+    });
+  };
+
+  appendEligibleGroupUsers(allUsers);
+  appendEligibleGroupUsers(selectedGroup?.community?.members || []);
 
   const getUpdateVisibilityLabel = (update) => {
     if (!update) return '';
@@ -2025,6 +3404,42 @@ const HomePage = () => {
     if (updatesFilter === 'all') return true;
     return update.visibility === updatesFilter;
   });
+
+  const eventTabs = [
+    { key: 'upcoming', label: 'upcoming' },
+    { key: 'myUpcoming', label: 'my events' },
+    { key: 'myPast', label: 'past my events' }
+  ];
+
+  const filteredEvents = (() => {
+    const allEvents = [...(events || [])];
+    const matchesTab = (event) => {
+      const pastEvent = isEventPast(event);
+      const myEvent = isMyEvent(event);
+
+      if (activeEventsTab === 'myUpcoming') return myEvent && !pastEvent;
+      if (activeEventsTab === 'myPast') return myEvent && pastEvent;
+      return !pastEvent;
+    };
+
+    const sorted = allEvents
+      .filter(matchesTab)
+      .sort((left, right) => {
+        const leftTime = new Date(getEventEndValue(left) || left?.date).getTime();
+        const rightTime = new Date(getEventEndValue(right) || right?.date).getTime();
+        return activeEventsTab === 'myPast'
+          ? rightTime - leftTime
+          : leftTime - rightTime;
+      });
+
+    return sorted;
+  })();
+
+  const getEventEmptyState = () => {
+    if (activeEventsTab === 'myUpcoming') return 'You have no upcoming events yet.';
+    if (activeEventsTab === 'myPast') return 'No past events from your calendar yet.';
+    return 'No upcoming events. Plan something!';
+  };
 
   useEffect(() => {
     if (!showNewChatModal || activeChatModalTab !== 'discover') return;
@@ -2124,17 +3539,7 @@ const HomePage = () => {
               value={messageSearchQuery}
               onChange={(e) => setMessageSearchQuery(e.target.value)}
             />
-            <button
-              type="button"
-              className="chat-action-btn"
-              onClick={handleOpenScheduleModal}
-              onMouseEnter={() => setCursorSize(60)}
-              onMouseLeave={() => setCursorSize(40)}
-              title="Schedule a message"
-              disabled={disableInput}
-            >
-              <Clock size={18} />
-            </button>
+            
           </div>
         </div>
 
@@ -2537,7 +3942,15 @@ const HomePage = () => {
 
 
   return (
-    <div className={`home-page ${theme === 'light' ? 'theme-light' : 'theme-dark'}`}>
+    <div className={`home-page ${theme === 'light' ? 'theme-light' : 'theme-dark'} ${cursorEnabled ? 'custom-cursor-enabled' : ''} ${isThemeTransitioning ? 'theme-transitioning' : ''}`}>
+      {appLoading && (
+        <div className="page-loading-overlay" aria-live="polite">
+          <div className="page-loading-card">
+            <div className="page-loading-spinner" />
+            <p>Loading your workspace...</p>
+          </div>
+        </div>
+      )}
       {/* Top Navigation */}
       <nav className="top-nav">
         <div className="nav-container">
@@ -2571,8 +3984,11 @@ const HomePage = () => {
               <Search size={20} />
             </button>
             <button
+              ref={notificationButtonRef}
               className="icon-btn"
               onClick={() => setShowNotifications((prev) => !prev)}
+              aria-expanded={showNotifications}
+              aria-haspopup="dialog"
               onMouseEnter={() => setCursorSize(60)}
               onMouseLeave={() => setCursorSize(40)}
             >
@@ -2583,7 +3999,7 @@ const HomePage = () => {
             </button>
             <button
               className="icon-btn"
-              onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+              onClick={handleThemeToggle}
               onMouseEnter={() => setCursorSize(60)}
               onMouseLeave={() => setCursorSize(40)}
               title="Toggle theme"
@@ -2596,11 +4012,23 @@ const HomePage = () => {
                 setActiveTab('settings');
                 setIsMobileMenuOpen(false);
               }}
+              title="Profile"
+              aria-label="Profile"
               onMouseEnter={() => setCursorSize(60)}
               onMouseLeave={() => setCursorSize(40)}
             >
-              <User size={18} />
-              <span>profile</span>
+              {currentUser?.profilePic ? (
+                <SmartImage
+                  srcPath={currentUser.profilePic}
+                  alt={currentUser?.name || 'Profile'}
+                  className="profile-btn-avatar"
+                  fallback={<User size={18} />}
+                />
+              ) : currentUser?.name ? (
+                <span className="profile-btn-fallback">{currentUser.name.charAt(0).toUpperCase()}</span>
+              ) : (
+                <User size={18} />
+              )}
             </button>
             <button
               className="mobile-menu-btn"
@@ -2626,7 +4054,7 @@ const HomePage = () => {
       </nav>
 
       {showNotifications && (
-        <div className="notification-panel">
+        <div ref={notificationPanelRef} className="notification-panel" role="dialog" aria-label="Notifications">
           <div className="notification-header">
             <span>Notifications</span>
             <button type="button" className="notification-clear" onClick={() => setNotifications([])}>clear</button>
@@ -2636,10 +4064,15 @@ const HomePage = () => {
               <div className="notification-empty">No notifications</div>
             ) : (
               notifications.map((note) => (
-                <div key={note.id} className="notification-item">
+                <button
+                  key={note.id}
+                  type="button"
+                  className={`notification-item ${note.chatId ? 'notification-item--interactive' : ''}`}
+                  onClick={() => handleNotificationItemClick(note)}
+                >
                   <div className="notification-title">{note.type || 'message'}</div>
                   <div className="notification-body">{note.content || 'New activity'}</div>
-                </div>
+                </button>
               ))
             )}
           </div>
@@ -2648,10 +4081,16 @@ const HomePage = () => {
 
       {/* Main Content */}
       <main className="main-content">
+        {pageSectionLoading === activeTab && activeTab !== 'chats' && (
+          <div className="page-inline-loader" aria-live="polite">
+            <div className="page-loading-spinner page-loading-spinner--small" />
+            <span>Loading {activeTab}...</span>
+          </div>
+        )}
 
         {/* Chats Section */}
         {activeTab === 'chats' && (
-          <div className="section-content">
+          <div className="section-content rounded-lg">
             <div className="section-header">
               <h2>chats</h2>
               <button
@@ -2714,7 +4153,10 @@ const HomePage = () => {
             </div>
 
             {/* Chat Window */}
-            {selectedChat && (
+            {selectedChat && (() => {
+              const disableInput = isChatReadOnlyForCurrentUser(selectedChat);
+
+              return (
               <div className="chat-window">
                 <div className="chat-window-header">
                   <button
@@ -2731,8 +4173,8 @@ const HomePage = () => {
                       {/* Online status indicator */}
                       {!selectedChat.isGroup && selectedChat.participants && (
                         (() => {
-                          const otherUser = selectedChat.participants.find(p => p?._id !== localStorage.getItem('userId'));
-                          return otherUser && onlineUsers.has(otherUser._id) && (
+                          const otherUser = getDirectChatOtherUser(selectedChat);
+                          return otherUser && isUserOnline(otherUser?._id || otherUser?.id || otherUser) && (
                             <div className="online-indicator"></div>
                           );
                         })()
@@ -2742,8 +4184,8 @@ const HomePage = () => {
                       <h3>{getChatName(selectedChat)}</h3>
                       {!selectedChat.isGroup && selectedChat.participants && (
                         (() => {
-                          const otherUser = selectedChat.participants.find(p => p?._id !== localStorage.getItem('userId'));
-                          return otherUser && onlineUsers.has(otherUser._id) && (
+                          const otherUser = getDirectChatOtherUser(selectedChat);
+                          return otherUser && isUserOnline(otherUser?._id || otherUser?.id || otherUser) && (
                             <span className="online-status-text">online</span>
                           );
                         })()
@@ -2751,16 +4193,30 @@ const HomePage = () => {
                     </div>
                   </div>
                   <div className="chat-window-actions">
-                    <button
-                      type="button"
-                      className="chat-action-btn"
-                      onClick={handleOpenScheduleModal}
-                      onMouseEnter={() => setCursorSize(60)}
-                      onMouseLeave={() => setCursorSize(40)}
-                      title="Schedule a message"
-                    >
-                      <Clock size={18} />
-                    </button>
+                    {!selectedChat.isGroup && selectedChat.participants && (
+                      <>
+                      <button
+                        type="button"
+                        className="chat-action-btn"
+                        onClick={handleStartVideoCall}
+                        disabled={!canStartSelectedVideoCall}
+                        title={selectedChatVideoCallTitle}
+                      >
+                        <Video size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-action-btn"
+                        onClick={() => {
+                          const otherUser = getDirectChatOtherUser(selectedChat);
+                          handleOpenProfilePreview(otherUser?._id || otherUser?.id || otherUser);
+                        }}
+                        title="View profile"
+                      >
+                        <User size={16} />
+                      </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -2772,6 +4228,7 @@ const HomePage = () => {
                         type="button"
                         className="scheduled-add-btn"
                         onClick={handleOpenScheduleModal}
+                        disabled={disableInput}
                       >
                         add
                       </button>
@@ -2788,6 +4245,7 @@ const HomePage = () => {
                             type="button"
                             className="scheduled-cancel"
                             onClick={() => handleCancelSchedule(item._id)}
+                            disabled={disableInput}
                           >
                             cancel
                           </button>
@@ -2844,6 +4302,7 @@ const HomePage = () => {
                                 className="message-action-btn"
                                 onClick={() => handleStartReply(msg)}
                                 title="Reply"
+                                disabled={disableInput}
                               >
                                 <Reply size={14} />
                               </button>
@@ -3066,6 +4525,7 @@ const HomePage = () => {
                       onMouseEnter={() => setCursorSize(60)}
                       onMouseLeave={() => setCursorSize(40)}
                       title="Attach file"
+                      disabled={disableInput || uploadingAttachment}
                     >
                       <Paperclip size={20} />
                     </button>
@@ -3076,6 +4536,7 @@ const HomePage = () => {
                       onMouseEnter={() => setCursorSize(60)}
                       onMouseLeave={() => setCursorSize(40)}
                       title="Share Location"
+                      disabled={disableInput}
                     >
                       <MapPin size={20} />
                     </button>
@@ -3092,6 +4553,7 @@ const HomePage = () => {
                       onMouseEnter={() => setCursorSize(60)}
                       onMouseLeave={() => setCursorSize(40)}
                       title="Create poll"
+                      disabled={disableInput}
                     >
                       <Users size={20} />
                     </button>
@@ -3102,6 +4564,7 @@ const HomePage = () => {
                       onMouseEnter={() => setCursorSize(60)}
                       onMouseLeave={() => setCursorSize(40)}
                       title="Add emoji"
+                      disabled={disableInput}
                     >
                       <Smile size={20} />
                     </button>
@@ -3112,6 +4575,7 @@ const HomePage = () => {
                       onMouseEnter={() => setCursorSize(60)}
                       onMouseLeave={() => setCursorSize(40)}
                       title="Schedule message"
+                      disabled={disableInput}
                     >
                       <Clock size={20} />
                     </button>
@@ -3122,22 +4586,25 @@ const HomePage = () => {
                     type="text"
                     value={newMessage}
                     onChange={handleTyping}
-                    placeholder="Type a message..."
+                    placeholder={disableInput ? 'Only admins can send messages' : 'Type a message...'}
                     className="message-input"
                     onMouseEnter={() => setCursorSize(60)}
                     onMouseLeave={() => setCursorSize(40)}
+                    disabled={disableInput}
                   />
                   <button
                     type="submit"
                     className="send-message-btn"
                     onMouseEnter={() => setCursorSize(60)}
                     onMouseLeave={() => setCursorSize(40)}
+                    disabled={disableInput}
                   >
                     <Send size={20} />
                   </button>
                 </form>
               </div>
-            )}
+              );
+            })()}
           </div>
         )}
 
@@ -3285,7 +4752,7 @@ const HomePage = () => {
                     placeholder="Ask AI anything, or translate using the bar above..."
                     className="ai-input"
                   />
-                  <button type="submit" className="send-btn" disabled={isAiTyping}>
+                  <button type="submit" className="send-btn" disabled={isAiTyping || !aiInput.trim()}>
                     <Send size={20} />
                   </button>
                 </form>
@@ -3325,21 +4792,20 @@ const HomePage = () => {
                 >
                   <ArrowLeft size={16} /> back to communities
                 </button>
-                <div className="detail-header" style={{ background: 'rgba(255,255,255,0.05)', padding: '30px', borderRadius: '16px', marginBottom: '30px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '20px', marginBottom: '20px' }}>
+                <div className="detail-header detail-header--community">
+                  <div className="detail-header-hero">
                     <div className="avatar-large" style={{ fontSize: '3rem' }}>
-                      {selectedCommunity.icon && (selectedCommunity.icon.startsWith('http') || selectedCommunity.icon.startsWith('/uploads')) ? (
-                        <img src={getAvatarUrl(selectedCommunity.icon)} alt={selectedCommunity.name || 'Community'} />
-                      ) : (
-                        selectedCommunity.icon || selectedCommunity.name?.charAt(0)?.toUpperCase()
-                      )}
+                      {renderEntityAvatar('', selectedCommunity.icon, selectedCommunity.name, selectedCommunity.name || 'Community')}
                     </div>
-                    <div>
+                    <div className="detail-header-copy">
+                      <span className="detail-eyebrow">{selectedCommunity.category || 'community'}</span>
                       <h2>{selectedCommunity.name}</h2>
-                      <p style={{ color: 'rgba(255,255,255,0.6)' }}>{selectedCommunity.category} · {selectedCommunity.members?.length || 0} members</p>
+                      <p className="detail-meta">{selectedCommunity.members?.length || 0} members</p>
                     </div>
                   </div>
-                  <p>{selectedCommunity.description}</p>
+                  <p className="detail-description">
+                    {selectedCommunity.description || 'A shared space for announcements, conversation, and coordinated activity.'}
+                  </p>
                   {selectedCommunity.rules && (
                     <div style={{ marginTop: '20px', padding: '15px', background: 'rgba(0,0,0,0.2)', borderRadius: '8px' }}>
                       <h4 style={{ marginBottom: '10px' }}>Rules:</h4>
@@ -3347,8 +4813,8 @@ const HomePage = () => {
                     </div>
                   )}
                   <button
-                    className="join-btn"
-                    style={{ background: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.6)', marginTop: '20px' }}
+                    className="join-btn join-btn--muted"
+                    style={{ marginTop: '20px' }}
                     onClick={() => handleLeaveCommunity(selectedCommunity._id)}
                   >
                     leave community
@@ -3384,9 +4850,15 @@ const HomePage = () => {
                           <div key={memberId} className="member-row">
                             <div className="member-info">
                               <span className="member-name">{member?.name || 'Member'}</span>
+                              {member?.username && <span className="member-handle">@{member.username}</span>}
                               {isCreator && <span className="member-role">creator</span>}
                               {!isCreator && isAdmin && <span className="member-role">admin</span>}
                               {!isAdmin && <span className="member-role">member</span>}
+                            </div>
+                            <div className="member-actions">
+                              <button type="button" onClick={() => handleOpenProfilePreview(memberId)} aria-label="View profile" title="View profile">
+                                <User size={14} />
+                              </button>
                             </div>
                             {isCurrentUserCommunityAdmin(selectedCommunity) && (memberId !== localStorage.getItem('userId')) && (
                               <div className="member-actions">
@@ -3527,21 +4999,25 @@ const HomePage = () => {
                         (selectedCommunity.groups || []).map((group) => (
                           <div
                             key={group._id}
-                            className="community-card"
+                            className="community-card community-card--group community-card--nested"
                             onClick={() => openGroupDetails(group._id)}
                           >
                             <div className="community-header">
                               <div className="community-avatar-large">
-                                {group.profileImage ? (
-                                  <img src={getAvatarUrl(group.profileImage)} alt={group.name || 'Group'} />
-                                ) : (
-                                  group.icon || group.name?.charAt(0)?.toUpperCase()
-                                )}
+                                {renderEntityAvatar(group.profileImage, group.icon, group.name, group.name || 'Group')}
                               </div>
+                              <span className="community-card-pill">group</span>
                             </div>
-                            <h3>{group.name}</h3>
-                            <p className="community-category">Group</p>
-                            <p className="community-members">{group.members?.length || 0} members</p>
+                            <div className="community-card-copy">
+                              <h3>{group.name}</h3>
+                              <p className="community-card-description">
+                                {group.description || 'Focused discussion, updates, and events for this community circle.'}
+                              </p>
+                            </div>
+                            <div className="community-card-footer">
+                              <p className="community-members">{group.members?.length || 0} members</p>
+                              <span className="community-status">open</span>
+                            </div>
                           </div>
                         ))
                       )}
@@ -3575,34 +5051,44 @@ const HomePage = () => {
                       No communities found. Create the first one!
                     </div>
                   ) : (
-                    communities.map((community) => (
+                    communities.map((community) => {
+                      const isJoined = isCurrentUserCommunityMember(community);
+
+                      return (
                       <div
                         key={community._id}
-                        className="community-card"
+                        className="community-card community-card--community"
                         onMouseEnter={() => setCursorSize(70)}
                         onMouseLeave={() => setCursorSize(40)}
                         onClick={() => {
-                          if (community.members.some(m => m._id === localStorage.getItem('userId') || m === localStorage.getItem('userId'))) {
+                          if (isJoined) {
                             openCommunityDetails(community._id);
                           }
                         }}
                       >
                         <div className="community-header">
                           <div className="community-avatar-large">
-                            {community.icon && (community.icon.startsWith('http') || community.icon.startsWith('/uploads')) ? (
-                              <img src={getAvatarUrl(community.icon)} alt={community.name || 'Community'} />
-                            ) : (
-                              community.icon || community.name?.charAt(0)?.toUpperCase()
-                            )}
+                            {renderEntityAvatar('', community.icon, community.name, community.name || 'Community')}
                           </div>
+                          <span className="community-card-pill">{community.category || 'community'}</span>
                         </div>
-                        <h3>{community.name}</h3>
-                        <p className="community-category">{community.category}</p>
-                        <p className="community-members">{community.members?.length || 0} members</p>
-                        {(community.members || []).some(m => m._id === localStorage.getItem('userId') || m === localStorage.getItem('userId')) ? (
+                        <div className="community-card-copy">
+                          <h3>{community.name}</h3>
+                          <p className="community-card-description">
+                            {community.description || 'Bring announcements, shared interests, and local energy into one place.'}
+                          </p>
+                        </div>
+                        <div className="community-card-footer">
+                          <p className="community-members">{community.members?.length || 0} members</p>
+                          <span className="community-status">
+                            {isJoined
+                              ? 'joined'
+                              : 'discover'}
+                          </span>
+                        </div>
+                        {isJoined ? (
                           <button
-                            className="join-btn"
-                            style={{ background: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.6)' }}
+                            className="join-btn join-btn--muted"
                             onClick={(e) => { e.stopPropagation(); handleLeaveCommunity(community._id); }}
                             onMouseEnter={() => setCursorSize(60)}
                             onMouseLeave={() => setCursorSize(40)}
@@ -3611,7 +5097,7 @@ const HomePage = () => {
                           </button>
                         ) : (
                           <button
-                            className="join-btn"
+                            className="join-btn join-btn--community"
                             onClick={(e) => { e.stopPropagation(); handleJoinCommunity(community._id); }}
                             onMouseEnter={() => setCursorSize(60)}
                             onMouseLeave={() => setCursorSize(40)}
@@ -3620,7 +5106,8 @@ const HomePage = () => {
                           </button>
                         )}
                       </div>
-                    ))
+                    );
+                    })
                   )}
                 </div>
               </>
@@ -3654,24 +5141,23 @@ const HomePage = () => {
                 >
                   <ArrowLeft size={16} /> back to groups
                 </button>
-                <div className="detail-header" style={{ background: 'rgba(255,255,255,0.05)', padding: '30px', borderRadius: '16px', marginBottom: '30px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '20px', marginBottom: '20px' }}>
+                <div className="detail-header detail-header--group">
+                  <div className="detail-header-hero">
                     <div className="avatar-large" style={{ fontSize: '3rem' }}>
-                      {selectedGroup.profileImage ? (
-                        <img src={getAvatarUrl(selectedGroup.profileImage)} alt={selectedGroup.name || 'Group'} />
-                      ) : (
-                        selectedGroup.icon || selectedGroup.name?.charAt(0)?.toUpperCase()
-                      )}
+                      {renderEntityAvatar(selectedGroup.profileImage, selectedGroup.icon, selectedGroup.name, selectedGroup.name || 'Group')}
                     </div>
-                    <div>
+                    <div className="detail-header-copy">
+                      <span className="detail-eyebrow">group</span>
                       <h2>{selectedGroup.name}</h2>
-                      <p style={{ color: 'rgba(255,255,255,0.6)' }}>{selectedGroup.members?.length || 0} members</p>
+                      <p className="detail-meta">{selectedGroup.members?.length || 0} members</p>
                     </div>
                   </div>
-                  <p>{selectedGroup.description}</p>
+                  <p className="detail-description">
+                    {selectedGroup.description || 'A tighter room for day-to-day collaboration, updates, and event planning.'}
+                  </p>
                   <button
-                    className="join-btn"
-                    style={{ background: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.6)', marginTop: '20px' }}
+                    className="join-btn join-btn--muted"
+                    style={{ marginTop: '20px' }}
                     onClick={() => handleLeaveGroup(selectedGroup._id)}
                   >
                     leave group
@@ -3713,17 +5199,34 @@ const HomePage = () => {
                         <select
                           value={selectedMemberToAdd}
                           onChange={(e) => setSelectedMemberToAdd(e.target.value)}
+                          disabled={peopleDirectoryLoading || eligibleGroupUsers.length === 0}
                         >
-                          <option value="">Select user to add</option>
-                          {allUsers
-                            .filter((user) => !(selectedGroup.members || []).some((m) => (m?._id || m) === user._id))
-                            .map((user) => (
-                              <option key={user._id} value={user._id}>
-                                {user.name} (@{user.username})
-                              </option>
-                            ))}
+                          <option value="">
+                            {peopleDirectoryLoading
+                              ? 'Loading people...'
+                              : eligibleGroupUsers.length === 0
+                                ? 'No eligible people to add'
+                                : 'Select user to add'}
+                          </option>
+                          {eligibleGroupUsers.map((user) => (
+                            <option key={user._id} value={user._id}>
+                              {user.name} (@{user.username})
+                            </option>
+                          ))}
                         </select>
-                        <button type="button" className="create-group-btn" onClick={handleAddGroupMember}>add</button>
+                        <button
+                          type="button"
+                          className="create-group-btn"
+                          onClick={handleAddGroupMember}
+                          disabled={peopleDirectoryLoading || !selectedMemberToAdd}
+                        >
+                          {peopleDirectoryLoading ? 'loading...' : 'add'}
+                        </button>
+                      </div>
+                    )}
+                    {isCurrentUserGroupAdmin(selectedGroup) && !peopleDirectoryLoading && eligibleGroupUsers.length === 0 && (
+                      <div className="member-helper-text">
+                        Add contacts first, or use a community-linked group to pick from community members here.
                       </div>
                     )}
                     <div className="member-list">
@@ -3735,9 +5238,15 @@ const HomePage = () => {
                           <div key={memberId} className="member-row">
                             <div className="member-info">
                               <span className="member-name">{member?.name || 'Member'}</span>
+                              {member?.username && <span className="member-handle">@{member.username}</span>}
                               {isCreator && <span className="member-role">creator</span>}
                               {!isCreator && isAdmin && <span className="member-role">admin</span>}
                               {!isAdmin && <span className="member-role">member</span>}
+                            </div>
+                            <div className="member-actions">
+                              <button type="button" onClick={() => handleOpenProfilePreview(memberId)} aria-label="View profile" title="View profile">
+                                <User size={14} />
+                              </button>
                             </div>
                             {isCurrentUserGroupAdmin(selectedGroup) && (memberId !== localStorage.getItem('userId')) && (
                               <div className="member-actions">
@@ -3814,10 +5323,18 @@ const HomePage = () => {
                       <span>Admins only mode</span>
                       <input
                         type="checkbox"
-                        checked={Boolean(selectedGroup?.settings?.adminsOnly)}
-                        onChange={(e) => handleGroupSettingsChange({ adminsOnly: e.target.checked })}
-                      />
-                    </div>
+                        checked={Boolean(selectedGroup?.settings?.adminsOnly)} 
+ onChange={(e) => handleGroupSettingsChange({ adminsOnly: e.target.checked })} 
+ /> 
+ </div> 
+ <div className="settings-row"> 
+ <span>Only admins can invite</span> 
+ <input 
+ type="checkbox" 
+ checked={Boolean(selectedGroup?.settings?.onlyAdminsInvite)} 
+ onChange={(e) => handleGroupSettingsChange({ onlyAdminsInvite: e.target.checked })} 
+ /> 
+ </div>
                     <div className="settings-row">
                       <span>Require join approval</span>
                       <input
@@ -3847,10 +5364,19 @@ const HomePage = () => {
                       <div className="updates-feed" style={{ marginTop: '20px' }}>
                         {(updates || []).filter(u => u.group && u.group._id === selectedGroup._id).map(update => (
                           <div key={update._id} className="feed-item" style={{ marginBottom: '20px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', padding: '20px' }}>
-                            <div className="feed-header" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                            <div
+                              className="feed-header"
+                              style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', cursor: 'pointer' }}
+                              onClick={() => handleOpenProfilePreview(update.author?._id || update.author?.id)}
+                            >
                               <div className="user-avatar" style={{ width: '40px', height: '40px' }}>
                                 {update.author?.profilePic ? (
-                                  <img src={getAvatarUrl(update.author.profilePic)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                                  <SmartImage
+                                    srcPath={update.author.profilePic}
+                                    alt={update.author?.name || 'User'}
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}
+                                    fallback={update.author?.name?.charAt(0)?.toUpperCase() || 'U'}
+                                  />
                                 ) : (
                                   update.author?.name?.charAt(0)?.toUpperCase() || 'U'
                                 )}
@@ -3862,7 +5388,12 @@ const HomePage = () => {
                             </div>
                             {update.image && (
                               <div className="feed-image" style={{ marginBottom: '16px', borderRadius: '12px', overflow: 'hidden' }}>
-                                <img src={getAvatarUrl(update.image)} alt="Update" style={{ width: '100%', display: 'block' }} />
+                                <SmartImage
+                                  srcPath={update.image}
+                                  alt="Update"
+                                  style={{ width: '100%', display: 'block' }}
+                                  fallback={<div style={{ padding: '18px', color: 'rgba(255,255,255,0.65)', background: 'rgba(0,0,0,0.2)' }}>Image unavailable</div>}
+                                />
                               </div>
                             )}
                             <p>{update.content}</p>
@@ -3922,7 +5453,7 @@ const HomePage = () => {
                     groups.map((group) => (
                       <div
                         key={group._id}
-                        className="community-card"
+                        className="community-card community-card--group"
                         onMouseEnter={() => setCursorSize(70)}
                         onMouseLeave={() => setCursorSize(40)}
                         onClick={() => {
@@ -3933,20 +5464,27 @@ const HomePage = () => {
                       >
                         <div className="community-header">
                           <div className="community-avatar-large">
-                            {group.profileImage ? (
-                              <img src={getAvatarUrl(group.profileImage)} alt={group.name || 'Group'} />
-                            ) : (
-                              group.icon || group.name?.charAt(0)?.toUpperCase()
-                            )}
+                            {renderEntityAvatar(group.profileImage, group.icon, group.name, group.name || 'Group')}
                           </div>
+                          <span className="community-card-pill">{group.community?.name ? 'linked group' : 'private group'}</span>
                         </div>
-                        <h3>{group.name}</h3>
-                        <p className="community-category">Group</p>
-                        <p className="community-members">{group.members?.length || 0} members</p>
+                        <div className="community-card-copy">
+                          <h3>{group.name}</h3>
+                          <p className="community-card-description">
+                            {group.description || 'Smaller, faster conversations for people working around the same topic.'}
+                          </p>
+                        </div>
+                        <div className="community-card-footer">
+                          <p className="community-members">{group.members?.length || 0} members</p>
+                          <span className="community-status">
+                            {(group.members || []).some(m => m._id === localStorage.getItem('userId') || m === localStorage.getItem('userId'))
+                              ? 'member'
+                              : 'available'}
+                          </span>
+                        </div>
                         {(group.members || []).some(m => m._id === localStorage.getItem('userId') || m === localStorage.getItem('userId')) ? (
                           <button
-                            className="join-btn"
-                            style={{ background: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.6)' }}
+                            className="join-btn join-btn--muted"
                             onClick={(e) => { e.stopPropagation(); handleLeaveGroup(group._id); }}
                             onMouseEnter={() => setCursorSize(60)}
                             onMouseLeave={() => setCursorSize(40)}
@@ -3955,7 +5493,7 @@ const HomePage = () => {
                           </button>
                         ) : (
                           <button
-                            className="join-btn"
+                            className="join-btn join-btn--group"
                             onClick={(e) => { e.stopPropagation(); handleJoinGroup(group._id); }}
                             onMouseEnter={() => setCursorSize(60)}
                             onMouseLeave={() => setCursorSize(40)}
@@ -4031,7 +5569,12 @@ const HomePage = () => {
                     <div className="story-content">
                       {/* Show user avatar or update image */}
                       {update.author?.profilePic ? (
-                        <img src={getAvatarUrl(update.author.profilePic)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                        <SmartImage
+                          srcPath={update.author.profilePic}
+                          alt={update.author?.name || 'User'}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}
+                          fallback={update.author?.name?.charAt(0)?.toUpperCase() || 'U'}
+                        />
                       ) : (
                         update.author?.name?.charAt(0)?.toUpperCase() || 'U'
                       )}
@@ -4050,10 +5593,19 @@ const HomePage = () => {
               ) : (
                 filteredUpdates.map(update => (
                   <div key={update._id} className="feed-item" style={{ marginBottom: '30px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', padding: '20px' }}>
-                    <div className="feed-header" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                    <div
+                      className="feed-header"
+                      style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', cursor: 'pointer' }}
+                      onClick={() => handleOpenProfilePreview(update.author?._id || update.author?.id)}
+                    >
                       <div className="user-avatar" style={{ width: '40px', height: '40px' }}>
                         {update.author?.profilePic ? (
-                          <img src={getAvatarUrl(update.author.profilePic)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                          <SmartImage
+                            srcPath={update.author.profilePic}
+                            alt={update.author?.name || 'User'}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }}
+                            fallback={update.author?.name?.charAt(0)?.toUpperCase() || 'U'}
+                          />
                         ) : (
                           update.author?.name?.charAt(0)?.toUpperCase() || 'U'
                         )}
@@ -4067,7 +5619,12 @@ const HomePage = () => {
                     </div>
                     {update.image && (
                       <div className="feed-image" style={{ marginBottom: '16px', borderRadius: '12px', overflow: 'hidden' }}>
-                        <img src={getAvatarUrl(update.image)} alt="Update" style={{ width: '100%', display: 'block' }} />
+                        <SmartImage
+                          srcPath={update.image}
+                          alt="Update"
+                          style={{ width: '100%', display: 'block' }}
+                          fallback={<div style={{ padding: '18px', color: 'rgba(255,255,255,0.65)', background: 'rgba(0,0,0,0.2)' }}>Image unavailable</div>}
+                        />
                       </div>
                     )}
                     <p>{update.content || 'Shared an update'}</p>
@@ -4097,61 +5654,78 @@ const HomePage = () => {
               </div>
 
               <div className="events-tabs">
-                <button className="event-tab active">upcoming</button>
-                <button className="event-tab">past</button>
-                <button className="event-tab">my events</button>
+                {eventTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`event-tab ${activeEventsTab === tab.key ? 'active' : ''}`}
+                    onClick={() => setActiveEventsTab(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
 
               <div className="events-list">
-                {events.length === 0 ? (
+                {filteredEvents.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '40px', color: 'rgba(255, 255, 255, 0.4)' }}>
-                    No upcoming events. Plan something!
+                    {getEventEmptyState()}
                   </div>
                 ) : (
-                  events.map((event) => (
-                    <div
+                  filteredEvents.map((event) => {
+                    const startDate = new Date(event.date);
+                    const endDate = new Date(getEventEndValue(event));
+                    const pastEvent = isEventPast(event);
+                    const isGoing = (event.attendees || []).some((attendee) => ((attendee?._id || attendee) || '').toString() === getCurrentUserId());
+                    const contextLabel = event.community?.name || event.group?.name || 'Contacts';
+
+                    return (
+                      <div
                       key={event._id}
                       className="event-card"
                       onMouseEnter={() => setCursorSize(70)}
                       onMouseLeave={() => setCursorSize(40)}
                     >
                       <div className="event-date-badge">
-                        <span className="date-day">{new Date(event.date).getDate()}</span>
-                        <span className="date-month">{new Date(event.date).toLocaleString('default', { month: 'short' })}</span>
+                        <span className="date-day">{startDate.getDate()}</span>
+                        <span className="date-month">{startDate.toLocaleString('default', { month: 'short' })}</span>
                       </div>
                       <div className="event-details">
                         <h3>{event.title}</h3>
-                        <p className="event-community">{event.community?.name || 'General'}</p>
+                        <p className="event-community">{contextLabel}</p>
                         <div className="event-meta">
-                          <span>{new Date(event.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>{startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           <span>·</span>
                           <span>{event.location}</span>
                           <span className="hide-mobile">·</span>
                           <span className="hide-mobile">{event.attendees?.length || 0} attending</span>
                         </div>
                       </div>
-                      {(event.attendees || []).some(a => a._id === localStorage.getItem('userId') || a === localStorage.getItem('userId')) ? (
+                      {isGoing ? (
                         <button
                           className="event-join-btn"
                           style={{ background: 'rgba(255,255,255,0.2)' }}
+                          disabled={pastEvent}
                           onClick={() => handleRsvpEvent(event._id)}
                           onMouseEnter={() => setCursorSize(60)}
                           onMouseLeave={() => setCursorSize(40)}
                         >
-                          going
+                          {pastEvent ? 'ended' : 'going'}
                         </button>
                       ) : (
                         <button
                           className="event-join-btn"
+                          disabled={pastEvent}
                           onClick={() => handleRsvpEvent(event._id)}
                           onMouseEnter={() => setCursorSize(60)}
                           onMouseLeave={() => setCursorSize(40)}
                         >
-                          join
+                          {pastEvent ? 'ended' : 'join'}
                         </button>
                       )}
-                    </div>
-                  ))
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -4187,7 +5761,7 @@ const HomePage = () => {
                         {previewImage ? (
                           <img src={previewImage} alt="Preview" />
                         ) : currentUser?.profilePic ? (
-                          <img src={getAvatarUrl(currentUser.profilePic)} alt="Profile" />
+                          <SmartImage srcPath={currentUser.profilePic} alt="Profile" fallback={<User size={18} />} />
                         ) : (
                           currentUser?.name?.charAt(0)?.toUpperCase() || 'U'
                         )}
@@ -4198,10 +5772,23 @@ const HomePage = () => {
                       <input
                         type="file"
                         id="profile-upload"
+                        accept={SUPPORTED_IMAGE_UPLOAD_ACCEPT}
                         style={{ display: 'none' }}
                         onChange={(e) => {
                           const file = e.target.files[0];
                           if (file) {
+                            const imageError = getUploadImageError(file);
+                            if (imageError) {
+                              setProfileFile(null);
+                              setPreviewImage(null);
+                              e.target.value = '';
+                              pushNotification({
+                                type: 'profile',
+                                content: imageError
+                              });
+                              return;
+                            }
+
                             setProfileFile(file);
                             setPreviewImage(URL.createObjectURL(file));
                           }
@@ -4287,8 +5874,8 @@ const HomePage = () => {
                       />
                     </div>
 
-                    <button type="submit" className="create-group-btn">
-                      Save Changes
+                    <button type="submit" className="create-group-btn" disabled={profileUpdateLoading}>
+                      {profileUpdateLoading ? 'Saving...' : 'Save Changes'}
                     </button>
                   </form>
                 </div>
@@ -4307,7 +5894,7 @@ const HomePage = () => {
                     <button
                       type="button"
                       className="secondary-btn"
-                      onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+                      onClick={handleThemeToggle}
                     >
                       {theme === 'dark' ? 'Switch to Light' : 'Switch to Dark'}
                     </button>
@@ -4595,7 +6182,7 @@ const HomePage = () => {
       {
         showNewChatModal && (
           <div className="modal-overlay" onClick={() => setShowNewChatModal(false)}>
-            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content chat-picker-modal" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
                 <h3>New Chat</h3>
                 <div className="modal-actions">
@@ -4619,11 +6206,37 @@ const HomePage = () => {
                 </div>
               </div>
 
+              <div className="chat-modal-tabs">
+                {[
+                  { key: 'contacts', label: 'contacts' },
+                  { key: 'requests', label: 'requests' },
+                  { key: 'discover', label: 'discover' }
+                ].map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`chat-modal-tab ${activeChatModalTab === tab.key ? 'active' : ''}`}
+                    onClick={() => {
+                      setActiveChatModalTab(tab.key);
+                      setChatActionError('');
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
               <div className="modal-search">
                 <Search size={18} />
                 <input
                   type="text"
-                  placeholder="Search anyone by name or username..."
+                  placeholder={
+                    activeChatModalTab === 'discover'
+                      ? 'Search by name or username to add contacts...'
+                      : activeChatModalTab === 'requests'
+                        ? 'Filter requests...'
+                        : 'Search your contacts...'
+                  }
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="modal-search-input"
@@ -4634,38 +6247,234 @@ const HomePage = () => {
               {chatActionError && <div className="chat-action-error">{chatActionError}</div>}
 
               <div className="modal-users-list">
-                {filteredUsers.length === 0 ? (
-                  <div className="no-users">
-                    {searchQuery ? `No users found for "${searchQuery}"` : 'No users found.'}
-                  </div>
-                ) : (
-                  filteredUsers.map((user) => (
-                    <div
-                      key={user._id}
-                      className="modal-user-item"
-                      onClick={() => handleCreateChat(user._id)}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <div className="modal-user-avatar">
-                        {user.profilePic ? (
-                          <img src={getAvatarUrl(user.profilePic)} alt={user.name || 'User'} className="avatar-img" />
-                        ) : (
-                          (user.name?.charAt(0) || '?').toUpperCase()
-                        )}
-                      </div>
-                      <div className="modal-user-info">
-                        <h4>{highlightMatch(user.name || 'Unknown', searchQuery)}</h4>
-                        <p>@{highlightMatch(user.username || '', searchQuery)}</p>
-                      </div>
-                      <button
-                        type="button"
-                        className="request-btn accept"
-                        onClick={(e) => { e.stopPropagation(); handleCreateChat(user._id); }}
-                      >
-                        chat
-                      </button>
+                {activeChatModalTab === 'contacts' && (
+                  filteredUsers.length === 0 ? (
+                    <div className="no-users chat-modal-empty">
+                      {searchQuery ? `No contacts found for "${searchQuery}"` : 'No contacts yet. Switch to discover to add people.'}
                     </div>
-                  ))
+                  ) : (
+                    filteredUsers.map((user) => {
+                      const summary = getProfileSummary(user);
+                      return (
+                        <div
+                          key={user._id}
+                          className="modal-user-item"
+                          onClick={() => handleCreateChat(user._id)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <div className="modal-user-avatar">
+                            {user.profilePic ? (
+                              <SmartImage srcPath={user.profilePic} alt={user.name || 'User'} className="avatar-img" fallback={(user.name?.charAt(0) || '?').toUpperCase()} />
+                            ) : (
+                              (user.name?.charAt(0) || '?').toUpperCase()
+                            )}
+                          </div>
+                          <div className="modal-user-info">
+                            <h4>{highlightMatch(user.name || 'Unknown', searchQuery)}</h4>
+                            <p>@{highlightMatch(user.username || '', searchQuery)}</p>
+                            {summary && <p className="modal-user-meta">{summary}</p>}
+                          </div>
+                          <button
+                            type="button"
+                            className="request-btn request-btn--icon"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenProfilePreview(user._id);
+                            }}
+                            aria-label="View profile"
+                            title="View profile"
+                          >
+                            <User size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="request-btn accept"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCreateChat(user._id);
+                            }}
+                          >
+                            chat
+                          </button>
+                        </div>
+                      );
+                    })
+                  )
+                )}
+
+                {activeChatModalTab === 'requests' && (
+                  (() => {
+                    const normalizedQuery = (searchQuery || '').toLowerCase();
+                    const incoming = (friendRequests.incoming || []).filter((user) =>
+                      !normalizedQuery
+                      || (user.name?.toLowerCase() || '').includes(normalizedQuery)
+                      || (user.username?.toLowerCase() || '').includes(normalizedQuery)
+                    );
+                    const outgoing = (friendRequests.outgoing || []).filter((user) =>
+                      !normalizedQuery
+                      || (user.name?.toLowerCase() || '').includes(normalizedQuery)
+                      || (user.username?.toLowerCase() || '').includes(normalizedQuery)
+                    );
+
+                    if (incoming.length === 0 && outgoing.length === 0) {
+                      return <div className="no-users chat-modal-empty">No pending contact requests.</div>;
+                    }
+
+                    return (
+                      <>
+                        {incoming.map((user) => (
+                          <div key={`incoming-${user._id}`} className="modal-user-item">
+                          <div className="modal-user-avatar">
+                            {user.profilePic ? (
+                                <SmartImage srcPath={user.profilePic} alt={user.name || 'User'} className="avatar-img" fallback={(user.name?.charAt(0) || '?').toUpperCase()} />
+                              ) : (
+                                (user.name?.charAt(0) || '?').toUpperCase()
+                              )}
+                            </div>
+                            <div className="modal-user-info">
+                              <h4>{user.name || 'Unknown'}</h4>
+                              <p>@{user.username || ''}</p>
+                              <p className="modal-user-meta">Wants to connect with you</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="request-btn request-btn--icon"
+                              onClick={() => handleOpenProfilePreview(user._id)}
+                              aria-label="View profile"
+                              title="View profile"
+                            >
+                              <User size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              className="request-btn accept"
+                              disabled={friendActionLoading === user._id}
+                              onClick={() => handleAcceptRequest(user._id)}
+                            >
+                              accept
+                            </button>
+                            <button
+                              type="button"
+                              className="request-btn"
+                              disabled={friendActionLoading === user._id}
+                              onClick={() => handleRejectRequest(user._id)}
+                            >
+                              reject
+                            </button>
+                          </div>
+                        ))}
+                        {outgoing.map((user) => (
+                          <div key={`outgoing-${user._id}`} className="modal-user-item">
+                          <div className="modal-user-avatar">
+                            {user.profilePic ? (
+                                <SmartImage srcPath={user.profilePic} alt={user.name || 'User'} className="avatar-img" fallback={(user.name?.charAt(0) || '?').toUpperCase()} />
+                              ) : (
+                                (user.name?.charAt(0) || '?').toUpperCase()
+                              )}
+                            </div>
+                            <div className="modal-user-info">
+                              <h4>{user.name || 'Unknown'}</h4>
+                              <p>@{user.username || ''}</p>
+                              <p className="modal-user-meta">Request sent</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="request-btn request-btn--icon"
+                              onClick={() => handleOpenProfilePreview(user._id)}
+                              aria-label="View profile"
+                              title="View profile"
+                            >
+                              <User size={14} />
+                            </button>
+                            <button type="button" className="request-btn" disabled>
+                              requested
+                            </button>
+                          </div>
+                        ))}
+                      </>
+                    );
+                  })()
+                )}
+
+                {activeChatModalTab === 'discover' && (
+                  !searchQuery.trim() ? (
+                    <div className="no-users chat-modal-empty">Search by username or name to find new contacts.</div>
+                  ) : filteredDiscoverUsers.length === 0 ? (
+                    <div className="no-users chat-modal-empty">No people found for "{searchQuery}".</div>
+                  ) : (
+                    filteredDiscoverUsers.map((user) => {
+                      const summary = getProfileSummary(user);
+                      return (
+                        <div key={user._id} className="modal-user-item">
+                          <div className="modal-user-avatar">
+                            {user.profilePic ? (
+                              <SmartImage srcPath={user.profilePic} alt={user.name || 'User'} className="avatar-img" fallback={(user.name?.charAt(0) || '?').toUpperCase()} />
+                            ) : (
+                              (user.name?.charAt(0) || '?').toUpperCase()
+                            )}
+                          </div>
+                          <div className="modal-user-info">
+                            <h4>{highlightMatch(user.name || 'Unknown', searchQuery)}</h4>
+                            <p>@{highlightMatch(user.username || '', searchQuery)}</p>
+                            {summary && <p className="modal-user-meta">{summary}</p>}
+                          </div>
+                          <button
+                            type="button"
+                            className="request-btn request-btn--icon"
+                            onClick={() => handleOpenProfilePreview(user._id)}
+                            aria-label="View profile"
+                            title="View profile"
+                          >
+                            <User size={14} />
+                          </button>
+                          {user.relationship === 'friend' && (
+                            <button
+                              type="button"
+                              className="request-btn accept"
+                              onClick={() => handleCreateChat(user._id)}
+                            >
+                              chat
+                            </button>
+                          )}
+                          {user.relationship === 'requested' && (
+                            <button type="button" className="request-btn" disabled>
+                              requested
+                            </button>
+                          )}
+                          {user.relationship === 'incoming' && (
+                            <>
+                              <button
+                                type="button"
+                                className="request-btn accept"
+                                disabled={friendActionLoading === user._id}
+                                onClick={() => handleAcceptRequest(user._id)}
+                              >
+                                accept
+                              </button>
+                              <button
+                                type="button"
+                                className="request-btn"
+                                disabled={friendActionLoading === user._id}
+                                onClick={() => handleRejectRequest(user._id)}
+                              >
+                                reject
+                              </button>
+                            </>
+                          )}
+                          {user.relationship === 'none' && (
+                            <button
+                              type="button"
+                              className="request-btn accept"
+                              disabled={friendActionLoading === user.username}
+                              onClick={() => handleSendFriendRequest(user.username)}
+                            >
+                              add
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })
+                  )
                 )}
               </div>
             </div>
@@ -4677,7 +6486,7 @@ const HomePage = () => {
       {
         showGroupChatModal && (
           <div className="modal-overlay" onClick={() => setShowGroupChatModal(false)}>
-            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content chat-picker-modal chat-picker-modal--group" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
                 <h3>New Group Chat</h3>
                 <button
@@ -4726,7 +6535,7 @@ const HomePage = () => {
                   >
                     <div className="modal-user-avatar">
                       {user.profilePic ? (
-                        <img src={getAvatarUrl(user.profilePic)} alt={user.name} className="avatar-img" />
+                        <SmartImage srcPath={user.profilePic} alt={user.name} className="avatar-img" fallback={user.name.charAt(0).toUpperCase()} />
                       ) : (
                         user.name.charAt(0).toUpperCase()
                       )}
@@ -4905,7 +6714,7 @@ const HomePage = () => {
       {
         showEventModal && (
           <div className="modal-overlay" onClick={() => setShowEventModal(false)}>
-            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content event-modal" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
                 <h3>Create Event</h3>
                 <button
@@ -4915,7 +6724,7 @@ const HomePage = () => {
                   <X size={20} />
                 </button>
               </div>
-              <form onSubmit={handleCreateEvent}>
+              <form onSubmit={handleCreateEvent} className="event-form">
                 <div className="group-name-input">
                   <input
                     type="text"
@@ -4934,21 +6743,50 @@ const HomePage = () => {
                       const value = e.target.value;
                       setNewEventDate(value);
                       if (!value) {
+                        setNewEventEndDate('');
                         setEventDateError('');
                         return;
                       }
                       const selectedDate = new Date(value);
-                      if (Number.isNaN(selectedDate.getTime())) {
-                        setEventDateError('Please choose a valid event date and time.');
-                        return;
+                      const defaultEndDate = new Date(selectedDate.getTime() + (60 * 60 * 1000));
+                      const nextEndValue = newEventEndDate || getLocalDateTimeValue(defaultEndDate);
+                      if (!newEventEndDate) {
+                        setNewEventEndDate(nextEndValue);
                       }
-                      setEventDateError(selectedDate < getCurrentMinuteDate() ? 'Past dates are not allowed.' : '');
+                      setEventDateError(buildEventRangeError(value, nextEndValue));
                     }}
                     className="modal-input"
                     min={minDateTimeLocal}
                     required
                   />
-                  {eventDateError && <div className="chat-action-error">{eventDateError}</div>}
+                </div>
+                <div className="group-name-input" style={{ marginTop: '10px' }}>
+                  <input
+                    type="datetime-local"
+                    value={newEventEndDate}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setNewEventEndDate(value);
+                      setEventDateError(buildEventRangeError(newEventDate, value));
+                    }}
+                    className="modal-input"
+                    min={newEventDate || minDateTimeLocal}
+                    required
+                  />
+                </div>
+                {(eventDateError || eventCreateError) && (
+                  <div className="chat-action-error" style={{ marginTop: '10px' }}>
+                    {eventDateError || eventCreateError}
+                  </div>
+                )}
+                <div className="group-name-input" style={{ marginTop: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="Cover image URL (optional)"
+                    value={newEventCoverImage}
+                    onChange={(e) => setNewEventCoverImage(e.target.value)}
+                    className="modal-input"
+                  />
                 </div>
                 <div className="group-name-input" style={{ marginTop: '10px' }}>
                   <input
@@ -5061,8 +6899,27 @@ const HomePage = () => {
                 <div className="group-name-input" style={{ marginTop: '10px' }}>
                   <input
                     type="file"
-                    accept="image/*"
-                    onChange={(e) => setNewUpdateImage(e.target.files[0])}
+                    accept={SUPPORTED_IMAGE_UPLOAD_ACCEPT}
+                    onChange={(e) => {
+                      const file = e.target.files[0];
+                      if (!file) {
+                        setNewUpdateImage(null);
+                        return;
+                      }
+
+                      const imageError = getUploadImageError(file);
+                      if (imageError) {
+                        setNewUpdateImage(null);
+                        e.target.value = '';
+                        pushNotification({
+                          type: 'update',
+                          content: imageError
+                        });
+                        return;
+                      }
+
+                      setNewUpdateImage(file);
+                    }}
                     className="modal-input"
                   />
                 </div>
@@ -5170,18 +7027,195 @@ const HomePage = () => {
         </div>
       )}
 
+      {(profilePreviewLoading || profilePreview || profilePreviewError) && (
+        <div className="modal-overlay" onClick={handleCloseProfilePreview}>
+          <div className="modal-content profile-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Profile</h3>
+              <button
+                type="button"
+                className="modal-icon-btn"
+                onClick={handleCloseProfilePreview}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {profilePreviewLoading && (
+              <div className="no-users">Loading profile...</div>
+            )}
+
+            {!profilePreviewLoading && profilePreviewError && (
+              <div className="chat-action-error">{profilePreviewError}</div>
+            )}
+
+            {!profilePreviewLoading && profilePreview && (
+              <div className="profile-preview-card">
+                <div className="profile-preview-avatar">
+                  {profilePreview.profilePic ? (
+                    <SmartImage srcPath={profilePreview.profilePic} alt={profilePreview.name || 'User'} className="avatar-img" fallback={(profilePreview.name?.charAt(0) || '?').toUpperCase()} />
+                  ) : (
+                    (profilePreview.name?.charAt(0) || '?').toUpperCase()
+                  )}
+                </div>
+                <h3>{profilePreview.name || 'Unknown User'}</h3>
+                <p className="profile-preview-handle">@{profilePreview.username || 'unknown'}</p>
+                {getRelationshipBadgeLabel(profilePreview.relationship) && (
+                  <span className="profile-preview-pill">{getRelationshipBadgeLabel(profilePreview.relationship)}</span>
+                )}
+                {profilePreview.bio && (
+                  <p className="profile-preview-bio">{profilePreview.bio}</p>
+                )}
+                <div className="profile-preview-grid">
+                  {profilePreview.whoAmI && (
+                    <div className="profile-preview-section">
+                      <span className="profile-preview-label">Who am I</span>
+                      <p>{profilePreview.whoAmI}</p>
+                    </div>
+                  )}
+                  {profilePreview.education && (
+                    <div className="profile-preview-section">
+                      <span className="profile-preview-label">Education</span>
+                      <p>{profilePreview.education}</p>
+                    </div>
+                  )}
+                  {profilePreview.aboutInfo && (
+                    <div className="profile-preview-section profile-preview-section--full">
+                      <span className="profile-preview-label">About</span>
+                      <p>{profilePreview.aboutInfo}</p>
+                    </div>
+                  )}
+                  {!!profilePreview.friendsCount && (
+                    <div className="profile-preview-section">
+                      <span className="profile-preview-label">Contacts</span>
+                      <p>{profilePreview.friendsCount}</p>
+                    </div>
+                  )}
+                </div>
+                {(profilePreview.interests || []).length > 0 && (
+                  <div className="profile-preview-section profile-preview-section--full">
+                    <span className="profile-preview-label">Interests</span>
+                    <div className="profile-preview-tags">
+                      {(profilePreview.interests || []).map((interest) => (
+                        <span key={`${profilePreview.id}-${interest}`} className="profile-preview-tag">
+                          {interest}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {callState.status !== 'idle' && (
+        <div className="call-overlay" role="dialog" aria-modal="true" aria-label="Video call">
+          <div className="call-panel">
+            <div className="call-panel-header">
+              <div>
+                <p className="call-panel-eyebrow">{getCallStatusLabel(callState.status)}</p>
+                <h3>{activeCallName}</h3>
+              </div>
+              <button
+                type="button"
+                className="call-close-btn"
+                onClick={callState.status === 'incoming' ? handleDeclineIncomingCall : handleEndCall}
+                title={callState.status === 'incoming' ? 'Decline call' : 'End call'}
+              >
+                <PhoneOff size={16} />
+              </button>
+            </div>
+
+            <div className="call-stage">
+              <div className="call-remote-video-shell">
+                <video
+                  ref={remoteVideoRef}
+                  className="call-remote-video"
+                  autoPlay
+                  playsInline
+                />
+                {!remoteStreamRef.current && (
+                  <div className="call-video-placeholder">
+                    <div className="call-avatar-fallback">
+                      {activeCallName?.charAt(0)?.toUpperCase() || 'C'}
+                    </div>
+                    <p>{callState.status === 'incoming' ? 'Waiting for you to answer' : getCallStatusLabel(callState.status)}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="call-local-video-shell">
+                <video
+                  ref={localVideoRef}
+                  className="call-local-video"
+                  autoPlay
+                  muted
+                  playsInline
+                />
+                {(callState.isCameraOff || callState.isReceiveOnly) && (
+                  <div className="call-local-video-off">
+                    <VideoOff size={18} />
+                    <span>{callState.isReceiveOnly ? 'Receive only' : 'Camera off'}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {callState.error && (
+              <p className="call-error-text">{callState.error}</p>
+            )}
+
+            <div className="call-controls">
+              {callState.status === 'incoming' ? (
+                <>
+                  <button type="button" className="call-control-btn call-control-btn--ghost" onClick={handleDeclineIncomingCall}>
+                    <PhoneOff size={18} />
+                    <span>Decline</span>
+                  </button>
+                  <button type="button" className="call-control-btn call-control-btn--accept" onClick={handleAcceptIncomingCall}>
+                    <Phone size={18} />
+                    <span>Accept</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={`call-control-btn ${callState.isMuted ? 'call-control-btn--off' : ''}`}
+                    onClick={handleToggleCallMute}
+                    disabled={callState.isReceiveOnly}
+                  >
+                    {callState.isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+                    <span>{callState.isMuted ? 'Unmute' : 'Mute'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`call-control-btn ${callState.isCameraOff ? 'call-control-btn--off' : ''}`}
+                    onClick={handleToggleCallCamera}
+                    disabled={callState.isReceiveOnly}
+                  >
+                    {callState.isCameraOff ? <VideoOff size={18} /> : <Video size={18} />}
+                    <span>{callState.isCameraOff ? 'Camera on' : 'Camera off'}</span>
+                  </button>
+                  <button type="button" className="call-control-btn call-control-btn--danger" onClick={handleEndCall}>
+                    <PhoneOff size={18} />
+                    <span>End</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Custom Cursor */}
-      <div
-        className="custom-cursor"
-        style={{
-          left: `${cursorPos.x}px`,
-          top: `${cursorPos.y}px`,
-          width: `${cursorSize}px`,
-          height: `${cursorSize}px`
-        }}
-      >
-        <div className="cursor-dot" />
-      </div>
+      {cursorEnabled && (
+        <div ref={cursorRef} className="custom-cursor" aria-hidden="true">
+          <div className="cursor-dot" />
+        </div>
+      )}
 
       <style>{`
         * {
@@ -5195,11 +7229,73 @@ const HomePage = () => {
           height: 100vh;
           overflow: hidden;
           background: #000000;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          font-family: var(--font-sans, 'Plus Jakarta Sans', 'Segoe UI', sans-serif);
           display: flex;
           flex-direction: column;
           color: white;
-          cursor: none;
+          color-scheme: dark;
+        }
+
+        .home-page.custom-cursor-enabled,
+        .home-page.custom-cursor-enabled * {
+          cursor: none !important;
+        }
+
+        .home-page,
+        .home-page .top-nav,
+        .home-page .main-content,
+        .home-page .section-content,
+        .home-page .chat-item,
+        .home-page .community-card,
+        .home-page .event-card,
+        .home-page .icon-btn,
+        .home-page .profile-btn,
+        .home-page .action-btn,
+        .home-page .request-btn,
+        .home-page .notification-panel,
+        .home-page .notification-item,
+        .home-page .member-panel,
+        .home-page .settings-panel,
+        .home-page .modal-content,
+        .home-page .chat-window {
+          transition:
+            background 0.42s ease,
+            background-color 0.42s ease,
+            color 0.32s ease,
+            box-shadow 0.42s ease,
+            border-color 0.42s ease,
+            transform 0.32s ease;
+        }
+
+        .home-page.theme-transitioning {
+          position: relative;
+          overflow: hidden;
+        }
+
+        .home-page.theme-transitioning::before {
+          content: '';
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          z-index: 1100;
+          background:
+            radial-gradient(circle at top center, rgba(96, 165, 250, 0.22), transparent 34%),
+            linear-gradient(180deg, rgba(59, 130, 246, 0.1), transparent 42%);
+          animation: themeWash 0.52s ease forwards;
+        }
+
+        @keyframes themeWash {
+          0% {
+            opacity: 0;
+            transform: scale(0.985);
+          }
+          35% {
+            opacity: 1;
+          }
+          100% {
+            opacity: 0;
+            transform: scale(1.01);
+          }
         }
 
         /* ============================================
@@ -5246,24 +7342,64 @@ const HomePage = () => {
         }
 
         select {
+          appearance: none;
+          -webkit-appearance: none;
+          -moz-appearance: none;
           background-color: rgba(255, 255, 255, 0.03);
           color: white;
           border: 1px solid rgba(255, 255, 255, 0.08);
-          padding: 8px 12px;
-          border-radius: 8px;
+          padding: 10px 42px 10px 14px;
+          border-radius: 12px;
           outline: none;
           font-family: inherit;
+          min-height: 44px;
+          line-height: 1.2;
+          cursor: pointer;
+          transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+          background-image:
+            linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.65) 50%),
+            linear-gradient(135deg, rgba(255, 255, 255, 0.65) 50%, transparent 50%),
+            linear-gradient(to right, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08));
+          background-position:
+            calc(100% - 18px) calc(50% - 2px),
+            calc(100% - 12px) calc(50% - 2px),
+            calc(100% - 2.45rem) 50%;
+          background-size: 6px 6px, 6px 6px, 1px 58%;
+          background-repeat: no-repeat;
+        }
+
+        select:hover {
+          border-color: rgba(255, 255, 255, 0.16);
+          background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        select:focus {
+          border-color: rgba(56, 189, 248, 0.45);
+          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
         }
 
         select option {
-          background-color: #1a1a1a;
+          background-color: #141414;
           color: white;
+          font-family: inherit;
         }
 
         .home-page.theme-light select {
           background-color: rgba(15, 23, 42, 0.04);
           color: #0f172a;
-          border-color: rgba(15, 23, 42, 0.12);
+          border-color: transparent;
+          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+          background-image:
+            linear-gradient(45deg, transparent 50%, rgba(15, 23, 42, 0.55) 50%),
+            linear-gradient(135deg, rgba(15, 23, 42, 0.55) 50%, transparent 50%),
+            linear-gradient(to right, rgba(15, 23, 42, 0.12), rgba(15, 23, 42, 0.12));
+        }
+
+        .home-page.theme-light .search-input:focus,
+        .home-page.theme-light .modal-input:focus,
+        .home-page.theme-light .message-input:focus,
+        .home-page.theme-light select:focus {
+          border-color: transparent;
         }
 
         .home-page.theme-light select option {
@@ -5272,17 +7408,30 @@ const HomePage = () => {
         }
 
         .home-page.theme-light {
-          background: #f4f7fb;
-          color: #0f172a;
+          background:
+            radial-gradient(circle at top left, rgba(96, 165, 250, 0.16), transparent 24%),
+            radial-gradient(circle at top right, rgba(45, 212, 191, 0.1), transparent 20%),
+            linear-gradient(180deg, #f7faff 0%, #eef4ff 48%, #f4f7fb 100%);
+          color: #10203a;
+          color-scheme: light;
         }
 
         .home-page.theme-light .top-nav {
-          background: rgba(255, 255, 255, 0.94);
-          border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 248, 255, 0.94));
+          border-bottom: none;
+          box-shadow: 0 12px 34px rgba(37, 99, 235, 0.08);
+        }
+
+        .home-page.theme-light .nav-center {
+          background: linear-gradient(180deg, rgba(219, 234, 254, 0.72), rgba(255, 255, 255, 0.9));
+          border-color: transparent;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.9),
+            0 8px 20px rgba(37, 99, 235, 0.06);
         }
 
         .home-page.theme-light .main-content {
-          background: #f4f7fb;
+          background: transparent;
         }
 
         .home-page.theme-light .app-logo,
@@ -5300,21 +7449,73 @@ const HomePage = () => {
         .home-page.theme-light .preference-title,
         .home-page.theme-light .detail-header h2,
         .home-page.theme-light .group-header h2 {
-          color: #0f172a;
+          color: #10203a;
         }
 
         .home-page.theme-light .app-logo {
-          background: none;
-          -webkit-text-fill-color: #0f172a;
+          background: linear-gradient(135deg, #0f172a 0%, #2563eb 85%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
         }
 
-        .home-page.theme-light .section-content,
+        .home-page.theme-light .nav-tab {
+          color: rgba(25, 45, 86, 0.76);
+        }
+
+        .home-page.theme-light .nav-tab::before {
+          background: linear-gradient(135deg, rgba(96, 165, 250, 0.16), rgba(255, 255, 255, 0.3));
+        }
+
+        .home-page.theme-light .nav-tab:hover {
+          color: #15305f;
+        }
+
+        .home-page.theme-light .section-content {
+          background: transparent;
+          box-shadow: none;
+          border-color: transparent;
+          color: #10203a;
+        }
+
         .home-page.theme-light .chat-window,
         .home-page.theme-light .modal-content,
         .home-page.theme-light .settings-panel {
-          background: rgba(255, 255, 255, 0.92);
-          color: #0f172a;
-          border-color: rgba(15, 23, 42, 0.12);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 255, 0.94));
+          color: #10203a;
+          border-color: transparent;
+          box-shadow:
+            0 18px 46px rgba(37, 99, 235, 0.06),
+            inset 0 1px 0 rgba(255, 255, 255, 0.9);
+        }
+
+        .home-page.theme-light .community-card {
+          border-color: transparent;
+          border-radius: 28px;
+          box-shadow:
+            0 16px 32px rgba(37, 99, 235, 0.07),
+            inset 0 1px 0 rgba(255, 255, 255, 0.72);
+        }
+
+        .home-page.theme-light .community-card--community {
+          background: linear-gradient(155deg, rgba(251, 191, 36, 0.16), rgba(255, 255, 255, 0.95) 42%, rgba(239, 246, 255, 0.96));
+        }
+
+        .home-page.theme-light .community-card--group {
+          background: linear-gradient(155deg, rgba(59, 130, 246, 0.16), rgba(255, 255, 255, 0.95) 42%, rgba(236, 253, 245, 0.92));
+        }
+
+        .home-page.theme-light .detail-header {
+          border-color: transparent;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+        }
+
+        .home-page.theme-light .detail-header--community {
+          background: linear-gradient(145deg, rgba(251, 191, 36, 0.16), rgba(255, 255, 255, 0.95) 46%, rgba(239, 246, 255, 0.96));
+        }
+
+        .home-page.theme-light .detail-header--group {
+          background: linear-gradient(145deg, rgba(96, 165, 250, 0.16), rgba(255, 255, 255, 0.95) 46%, rgba(236, 253, 245, 0.94));
         }
 
         .home-page.theme-light .search-input,
@@ -5323,10 +7524,34 @@ const HomePage = () => {
         .home-page.theme-light .message-input,
         .home-page.theme-light .modal-search,
         .home-page.theme-light .ai-translate-bar,
-        .home-page.theme-light .ai-language-select {
-          background: rgba(15, 23, 42, 0.04);
-          color: #0f172a !important;
-          border-color: rgba(15, 23, 42, 0.12);
+        .home-page.theme-light .ai-language-select,
+        .home-page.theme-light .custom-lang-select-trigger {
+          background: linear-gradient(180deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.88));
+          color: #10203a !important;
+          border-color: transparent;
+          box-shadow:
+            inset 0 0 0 1px rgba(59, 130, 246, 0.06),
+            0 1px 0 rgba(255, 255, 255, 0.85);
+        }
+
+        .home-page.theme-light .custom-lang-options-list {
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(245, 249, 255, 0.98));
+          border-color: transparent;
+          box-shadow: 0 18px 36px rgba(37, 99, 235, 0.12);
+        }
+
+        .home-page.theme-light .custom-lang-option {
+          color: rgba(15, 23, 42, 0.78);
+        }
+
+        .home-page.theme-light .custom-lang-option:hover {
+          background: rgba(15, 23, 42, 0.06);
+          color: #0f172a;
+        }
+
+        .home-page.theme-light .custom-lang-option.selected {
+          background: rgba(56, 189, 248, 0.14);
+          color: #0284c7;
         }
 
         .home-page.theme-light .modal-search-input {
@@ -5334,8 +7559,9 @@ const HomePage = () => {
         }
 
         .home-page.theme-light .mobile-nav-menu {
-          background: rgba(255, 255, 255, 0.96);
-          border-top: 1px solid rgba(15, 23, 42, 0.08);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.96));
+          border-top: none;
+          box-shadow: 0 18px 36px rgba(37, 99, 235, 0.1);
         }
 
         .home-page.theme-light .ai-translate-label {
@@ -5357,26 +7583,124 @@ const HomePage = () => {
 
         .home-page.theme-light .message.other .message-content,
         .home-page.theme-light .aichat-messages .message.other .message-content {
-          background: #f2f5fb;
-          color: #0f172a;
-          border-color: rgba(15, 23, 42, 0.08);
+          background: linear-gradient(180deg, rgba(236, 244, 255, 0.95), rgba(248, 250, 255, 0.96));
+          color: #10203a;
+          border-color: transparent;
+          box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.05);
+        }
+
+        .home-page.theme-light .chat-list,
+        .home-page.theme-light .events-list {
+          gap: 10px;
+        }
+
+        .home-page.theme-light .chat-item {
+          border-radius: 20px;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(240, 247, 255, 0.88));
+          box-shadow:
+            0 10px 24px rgba(37, 99, 235, 0.05),
+            inset 0 1px 0 rgba(255, 255, 255, 0.9);
         }
 
         .home-page.theme-light .icon-btn,
         .home-page.theme-light .profile-btn,
         .home-page.theme-light .modal-icon-btn,
-        .home-page.theme-light .nav-tab.active,
         .home-page.theme-light .action-btn,
-        .home-page.theme-light .request-btn.ghost {
-          color: #0f172a;
-          border-color: rgba(15, 23, 42, 0.15);
-          background: rgba(15, 23, 42, 0.05);
+        .home-page.theme-light .request-btn,
+        .home-page.theme-light .request-btn.ghost,
+        .home-page.theme-light .member-actions button {
+          color: #16315f;
+          border-color: transparent;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(236, 244, 255, 0.96));
+          box-shadow:
+            0 8px 18px rgba(37, 99, 235, 0.08),
+            inset 0 1px 0 rgba(255, 255, 255, 0.95);
+        }
+
+        .home-page.theme-light .nav-tab.active {
+          color: #ffffff;
+          background: linear-gradient(135deg, #60a5fa, #2563eb);
+          box-shadow:
+            0 10px 24px rgba(37, 99, 235, 0.22),
+            inset 0 1px 0 rgba(255, 255, 255, 0.24);
+        }
+
+        .home-page.theme-light .action-btn {
+          background: linear-gradient(135deg, rgba(191, 219, 254, 0.72), rgba(255, 255, 255, 0.96));
+          color: #16315f;
+        }
+
+        .home-page.theme-light .icon-btn:hover,
+        .home-page.theme-light .modal-icon-btn:hover,
+        .home-page.theme-light .profile-btn:hover,
+        .home-page.theme-light .action-btn:hover,
+        .home-page.theme-light .request-btn:hover,
+        .home-page.theme-light .request-btn.ghost:hover,
+        .home-page.theme-light .member-actions button:hover {
+          background: linear-gradient(135deg, rgba(219, 234, 254, 0.95), rgba(255, 255, 255, 0.98));
+          color: #10203a;
         }
 
         .home-page.theme-light .chat-item:hover,
         .home-page.theme-light .modal-user-item:hover {
-          background: rgba(15, 23, 42, 0.05);
-          border-color: rgba(15, 23, 42, 0.1);
+          background: linear-gradient(90deg, rgba(219, 234, 254, 0.55), rgba(255, 255, 255, 0.78));
+          border-color: transparent;
+        }
+
+        .home-page.theme-light .event-card,
+        .home-page.theme-light .modal-user-item,
+        .home-page.theme-light .member-panel,
+        .home-page.theme-light .settings-panel,
+        .home-page.theme-light .community-groups-panel,
+        .home-page.theme-light .pinned-panel,
+        .home-page.theme-light .scheduled-item,
+        .home-page.theme-light .updates-filter,
+        .home-page.theme-light .message-search-results {
+          border-color: transparent;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(239, 246, 255, 0.88));
+          box-shadow:
+            0 10px 24px rgba(37, 99, 235, 0.05),
+            inset 0 1px 0 rgba(255, 255, 255, 0.9);
+        }
+
+        .home-page.theme-light .event-card {
+          border-radius: 20px;
+        }
+
+        .home-page.theme-light .modal-user-item {
+          border-radius: 18px;
+        }
+
+        .home-page.theme-light .member-panel,
+        .home-page.theme-light .settings-panel,
+        .home-page.theme-light .community-groups-panel {
+          border-radius: 22px;
+        }
+
+        .home-page.theme-light .pinned-panel,
+        .home-page.theme-light .scheduled-item,
+        .home-page.theme-light .message-search-results {
+          border-radius: 18px;
+        }
+
+        .home-page.theme-light .updates-filter {
+          border-radius: 16px;
+        }
+
+        .home-page.theme-light .member-row,
+        .home-page.theme-light .settings-row {
+          padding: 14px 2px;
+          border-bottom-color: rgba(59, 130, 246, 0.08);
+        }
+
+        .home-page.theme-light .join-btn,
+        .home-page.theme-light .map-btn,
+        .home-page.theme-light .event-join-btn {
+          border-color: transparent;
+          border-radius: 18px;
+          box-shadow:
+            0 10px 22px rgba(37, 99, 235, 0.08),
+            inset 0 1px 0 rgba(255, 255, 255, 0.9);
         }
 
         .home-page.theme-light .chat-time,
@@ -5393,7 +7717,23 @@ const HomePage = () => {
         .home-page.theme-light .group-category,
         .home-page.theme-light .group-members,
         .home-page.theme-light p {
-          color: rgba(15, 23, 42, 0.6);
+          color: rgba(39, 60, 102, 0.64);
+        }
+
+        .home-page.theme-light .community-card-description,
+        .home-page.theme-light .community-status,
+        .home-page.theme-light .detail-meta,
+        .home-page.theme-light .detail-description,
+        .home-page.theme-light .member-handle,
+        .home-page.theme-light .updates-filter-label {
+          color: rgba(39, 60, 102, 0.68);
+        }
+
+        .home-page.theme-light .detail-eyebrow {
+          background: linear-gradient(135deg, rgba(219, 234, 254, 0.9), rgba(255, 255, 255, 0.94));
+          border-color: transparent;
+          color: #28509b;
+          box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.08);
         }
 
         .app-logo::after {
@@ -5433,6 +7773,7 @@ const HomePage = () => {
           color: rgba(255, 255, 255, 0.55);
           font-size: 0.875rem;
           font-weight: 700;
+          font-family: var(--font-sans, 'Plus Jakarta Sans', sans-serif);
           letter-spacing: -0.01em;
           text-transform: lowercase;
           cursor: pointer;
@@ -5506,17 +7847,51 @@ const HomePage = () => {
           background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
           border: 1px solid rgba(255, 255, 255, 0.15);
           color: white;
-          font-size: 0.875rem;
-          font-weight: 700;
           cursor: pointer;
-          padding: 11px 20px;
-          border-radius: 18px;
+          width: 48px;
+          height: 48px;
+          padding: 0;
+          border-radius: 50%;
           transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
           display: none;
           align-items: center;
-          gap: 9px;
-          text-transform: lowercase;
+          justify-content: center;
           box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+          position: relative;
+          overflow: hidden;
+        }
+
+        .profile-btn::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.26), transparent 58%);
+          opacity: 0;
+          transition: opacity 0.3s ease;
+        }
+
+        .profile-btn svg {
+          position: relative;
+          z-index: 1;
+          transition: transform 0.3s ease;
+        }
+
+        .profile-btn-avatar {
+          position: relative;
+          z-index: 1;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          border-radius: 50%;
+          transition: transform 0.3s ease;
+        }
+
+        .profile-btn-fallback {
+          position: relative;
+          z-index: 1;
+          font-size: 0.95rem;
+          font-weight: 700;
+          letter-spacing: -0.02em;
         }
 
         .profile-btn:hover {
@@ -5526,6 +7901,19 @@ const HomePage = () => {
           box-shadow: 
             0 6px 24px rgba(255, 255, 255, 0.12),
             0 2px 8px rgba(0, 0, 0, 0.4);
+        }
+
+        .profile-btn:hover::before {
+          opacity: 1;
+        }
+
+        .profile-btn:hover svg {
+          transform: scale(1.08) rotate(-8deg);
+        }
+
+        .profile-btn:hover .profile-btn-avatar,
+        .profile-btn:hover .profile-btn-fallback {
+          transform: scale(1.06);
         }
 
         .mobile-menu-btn {
@@ -5616,6 +8004,64 @@ const HomePage = () => {
           background: #000000;
         }
 
+        .page-loading-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 1200;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(4, 6, 10, 0.72);
+          backdrop-filter: blur(14px);
+        }
+
+        .page-loading-card {
+          display: grid;
+          gap: 14px;
+          min-width: 240px;
+          padding: 28px 30px;
+          border-radius: 24px;
+          background: rgba(17, 24, 39, 0.94);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+          justify-items: center;
+          text-align: center;
+          color: rgba(255, 255, 255, 0.88);
+        }
+
+        .page-loading-spinner {
+          width: 42px;
+          height: 42px;
+          border-radius: 50%;
+          border: 3px solid rgba(255, 255, 255, 0.16);
+          border-top-color: #38bdf8;
+          animation: spinLoader 0.85s linear infinite;
+        }
+
+        .page-loading-spinner--small {
+          width: 18px;
+          height: 18px;
+          border-width: 2px;
+        }
+
+        .page-inline-loader {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 18px;
+          padding: 10px 14px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: rgba(255, 255, 255, 0.78);
+        }
+
+        @keyframes spinLoader {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
         .main-content::-webkit-scrollbar {
           width: 10px;
         }
@@ -5646,23 +8092,25 @@ const HomePage = () => {
         }
 
         .section-header h2 {
-          font-size: 1.75rem;
-          font-weight: 700;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: 1.9rem;
+          font-weight: 800;
           color: white;
-          letter-spacing: -0.03em;
-          text-transform: lowercase;
+          letter-spacing: -0.05em;
+          text-transform: none;
         }
 
         .action-btn {
           background: rgba(255, 255, 255, 0.08);
           border: 1px solid rgba(255, 255, 255, 0.12);
           color: white;
-          font-size: 0.875rem;
-          font-weight: 600;
-          text-transform: lowercase;
+          font-size: 0.8rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
           cursor: pointer;
-          padding: 10px 22px;
-          border-radius: 16px;
+          padding: 11px 22px;
+          border-radius: 999px;
           transition: all 0.3s ease;
           white-space: nowrap;
         }
@@ -5933,45 +8381,75 @@ const HomePage = () => {
         /* Communities */
         .communities-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-          gap: 14px;
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          gap: 18px;
         }
 
         .community-card {
-          background: rgba(255, 255, 255, 0.03);
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          min-height: 240px;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
           border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 14px;
-          padding: 20px;
+          border-radius: 24px;
+          padding: 22px;
           cursor: pointer;
-          transition: all 0.3s ease;
+          overflow: hidden;
+          transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+        }
+
+        .community-card::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.12), transparent 42%);
+          opacity: 0.8;
+          pointer-events: none;
+        }
+
+        .community-card--community {
+          background: linear-gradient(160deg, rgba(249, 115, 22, 0.14), rgba(255, 255, 255, 0.04) 42%, rgba(255, 255, 255, 0.02));
+        }
+
+        .community-card--group {
+          background: linear-gradient(160deg, rgba(45, 212, 191, 0.14), rgba(255, 255, 255, 0.04) 42%, rgba(255, 255, 255, 0.02));
+        }
+
+        .community-card--nested {
+          min-height: 220px;
         }
 
         .community-card:hover {
-          background: rgba(255, 255, 255, 0.06);
-          border-color: rgba(255, 255, 255, 0.15);
-          transform: translateY(-4px);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+          border-color: rgba(255, 255, 255, 0.18);
+          transform: translateY(-6px);
+          box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
         }
 
         .community-header {
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
-          margin-bottom: 14px;
+          gap: 12px;
+          margin-bottom: 0;
         }
 
         .community-avatar-large {
-          width: 52px;
-          height: 52px;
+          width: 60px;
+          height: 60px;
           border-radius: 50%;
           background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
           border: 2px solid rgba(255, 255, 255, 0.1);
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 1.25rem;
+          font-size: 1.35rem;
           font-weight: 700;
           color: white;
+          overflow: hidden;
+          flex-shrink: 0;
+          box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
         }
 
         .community-avatar-large img,
@@ -5997,56 +8475,133 @@ const HomePage = () => {
           overflow: hidden;
         }
 
+        .community-card-copy {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          min-width: 0;
+          position: relative;
+          z-index: 1;
+        }
+
+        .community-card-pill,
         .active-badge {
-          background: rgba(34, 197, 94, 0.15);
-          border: 1px solid rgba(34, 197, 94, 0.4);
-          color: #22c55e;
-          font-size: 0.6875rem;
-          font-weight: 600;
-          text-transform: lowercase;
-          padding: 4px 8px;
-          border-radius: 10px;
+          align-self: flex-start;
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.76);
+          font-size: 0.68rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          padding: 6px 10px;
+          border-radius: 999px;
+          position: relative;
+          z-index: 1;
+        }
+
+        .community-card--community .community-card-pill {
+          background: rgba(249, 115, 22, 0.15);
+          border-color: rgba(249, 115, 22, 0.3);
+          color: #fdba74;
+        }
+
+        .community-card--group .community-card-pill {
+          background: rgba(45, 212, 191, 0.15);
+          border-color: rgba(45, 212, 191, 0.28);
+          color: #8ef2e4;
         }
 
         .community-card h3 {
-          font-size: 1rem;
-          font-weight: 600;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: 1.18rem;
+          font-weight: 800;
           color: white;
-          margin-bottom: 5px;
-          text-transform: lowercase;
+          margin: 0;
+          line-height: 1.05;
+          letter-spacing: -0.04em;
+          text-transform: none;
         }
 
+        .community-card-description,
         .community-category {
-          font-size: 0.75rem;
-          color: rgba(255, 255, 255, 0.4);
-          margin-bottom: 8px;
-          text-transform: lowercase;
+          font-size: 0.9rem;
+          color: rgba(255, 255, 255, 0.68);
+          line-height: 1.55;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
         }
 
         .community-members {
-          font-size: 0.8125rem;
-          color: rgba(255, 255, 255, 0.5);
-          margin-bottom: 14px;
-          text-transform: lowercase;
+          font-size: 0.82rem;
+          color: rgba(255, 255, 255, 0.66);
+          margin: 0;
+          font-weight: 600;
+        }
+
+        .community-card-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-top: auto;
+          position: relative;
+          z-index: 1;
+        }
+
+        .community-status {
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.72);
         }
 
         .join-btn {
+          margin-top: auto;
           width: 100%;
           background: rgba(255, 255, 255, 0.08);
           border: 1px solid rgba(255, 255, 255, 0.12);
           color: white;
-          font-size: 0.875rem;
-          font-weight: 600;
-          text-transform: lowercase;
+          min-height: 46px;
+          font-size: 0.78rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
           cursor: pointer;
-          padding: 10px 16px;
-          border-radius: 10px;
+          padding: 12px 16px;
+          border-radius: 14px;
           transition: all 0.3s ease;
+          position: relative;
+          z-index: 1;
+        }
+
+        .join-btn--community {
+          background: linear-gradient(135deg, rgba(249, 115, 22, 0.22), rgba(255, 255, 255, 0.08));
+          border-color: rgba(249, 115, 22, 0.3);
+        }
+
+        .join-btn--group {
+          background: linear-gradient(135deg, rgba(45, 212, 191, 0.22), rgba(255, 255, 255, 0.08));
+          border-color: rgba(45, 212, 191, 0.28);
+        }
+
+        .join-btn--muted {
+          padding-inline: 18px;
+          color: rgba(255, 255, 255, 0.72) !important;
+          border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .detail-header .join-btn--muted {
+          width: auto;
         }
 
         .join-btn:hover {
-          background: rgba(255, 255, 255, 0.12);
-          transform: translateY(-1px);
+          background: rgba(255, 255, 255, 0.14);
+          transform: translateY(-2px);
+          box-shadow: 0 10px 20px rgba(0, 0, 0, 0.18);
         }
 
         /* Updates */
@@ -6080,7 +8635,9 @@ const HomePage = () => {
         .updates-filter-label {
           font-size: 0.75rem;
           color: rgba(255, 255, 255, 0.6);
-          text-transform: lowercase;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-weight: 700;
         }
 
         .updates-filter-select {
@@ -6090,6 +8647,14 @@ const HomePage = () => {
           font-size: 0.8rem;
           outline: none;
           text-transform: lowercase;
+          min-height: 34px;
+          padding: 4px 30px 4px 8px;
+          border-radius: 8px;
+          background-position:
+            calc(100% - 14px) calc(50% - 1px),
+            calc(100% - 9px) calc(50% - 1px),
+            calc(100% - 1.9rem) 50%;
+          background-size: 5px 5px, 5px 5px, 1px 52%;
         }
 
         .updates-stories::-webkit-scrollbar {
@@ -6122,6 +8687,7 @@ const HomePage = () => {
           padding: 3px;
           background: transparent;
           transition: transform 0.3s ease;
+          overflow: hidden;
         }
 
         .story-item:hover .story-ring {
@@ -6153,6 +8719,15 @@ const HomePage = () => {
           font-weight: 700;
           color: white;
           position: relative;
+          overflow: hidden;
+          isolation: isolate;
+        }
+
+        .story-content img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
 
         .add-story .story-content span {
@@ -6178,6 +8753,22 @@ const HomePage = () => {
         .story-time {
           font-size: 0.6875rem !important;
           color: rgba(255, 255, 255, 0.4) !important;
+        }
+
+        .user-avatar {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          overflow: hidden;
+          flex-shrink: 0;
+          background: linear-gradient(135deg, #161616, #262626);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.95rem;
+          font-weight: 700;
+          color: white;
         }
 
         .location-section {
@@ -6373,18 +8964,44 @@ const HomePage = () => {
           transform: translateY(-2px);
         }
 
+        .event-join-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+          transform: none;
+        }
+
         /* Custom Cursor */
         .custom-cursor {
           position: fixed;
-          border: 2px solid rgba(255, 255, 255, 0.8);
+          top: 0;
+          left: 0;
+          width: 40px;
+          height: 40px;
+          border: 2px solid rgba(255, 255, 255, 0.72);
           border-radius: 50%;
           pointer-events: none;
           z-index: 10000;
-          transform: translate(-50%, -50%);
-          transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), 
-                      height 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-          background: transparent;
-          mix-blend-mode: difference;
+          transform: translate3d(-120px, -120px, 0);
+          opacity: 0;
+          background: rgba(255, 255, 255, 0.03);
+          box-shadow:
+            0 0 0 1px rgba(255, 255, 255, 0.04),
+            0 8px 24px rgba(0, 0, 0, 0.24);
+          backdrop-filter: blur(2px);
+          will-change: transform, width, height, opacity;
+          transition:
+            opacity 0.18s ease,
+            border-color 0.2s ease,
+            background-color 0.2s ease,
+            box-shadow 0.2s ease;
+        }
+
+        .custom-cursor.is-pressed {
+          border-color: rgba(56, 189, 248, 0.92);
+          background: rgba(56, 189, 248, 0.08);
+          box-shadow:
+            0 0 0 1px rgba(56, 189, 248, 0.14),
+            0 10px 28px rgba(37, 99, 235, 0.18);
         }
 
         .cursor-dot {
@@ -6396,6 +9013,23 @@ const HomePage = () => {
           height: 6px;
           background: white;
           border-radius: 50%;
+          transition: transform 0.18s ease, background-color 0.18s ease;
+        }
+
+        .custom-cursor.is-pressed .cursor-dot {
+          transform: translate(-50%, -50%) scale(0.8);
+          background: #7dd3fc;
+        }
+
+        @media (pointer: coarse), (prefers-reduced-motion: reduce) {
+          .custom-cursor {
+            display: none !important;
+          }
+
+          .home-page,
+          .home-page * {
+            cursor: auto !important;
+          }
         }
 
 
@@ -6462,10 +9096,12 @@ const HomePage = () => {
         }
 
         .chat-window-info h3 {
-          font-size: 1rem;
-          font-weight: 600;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: 1.12rem;
+          font-weight: 700;
           color: white;
-          text-transform: lowercase;
+          letter-spacing: -0.03em;
+          text-transform: none;
         }
 
         .messages-container {
@@ -6726,8 +9362,19 @@ const HomePage = () => {
           border: 1px solid rgba(255, 255, 255, 0.12);
           border-radius: 12px;
           box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
-          z-index: 50;
+          z-index: 1150;
           padding: 12px;
+        }
+
+        .home-page.theme-dark .notification-panel {
+          background:
+            linear-gradient(180deg, rgba(8, 13, 24, 0.96), rgba(10, 14, 28, 0.94)),
+            radial-gradient(circle at top right, rgba(59, 130, 246, 0.18), transparent 42%);
+          border-color: rgba(96, 165, 250, 0.2);
+          box-shadow:
+            0 18px 40px rgba(2, 6, 23, 0.56),
+            inset 0 1px 0 rgba(147, 197, 253, 0.08);
+          backdrop-filter: blur(24px) saturate(150%);
         }
 
         .notification-header {
@@ -6738,16 +9385,36 @@ const HomePage = () => {
           margin-bottom: 8px;
         }
 
+        .home-page.theme-dark .notification-header {
+          color: rgba(219, 234, 254, 0.92);
+        }
+
         .notification-list {
           max-height: 240px;
           overflow-y: auto;
         }
 
         .notification-item {
+          width: 100%;
+          border: none;
+          text-align: left;
+          font: inherit;
           padding: 8px;
           border-radius: 10px;
           background: rgba(255, 255, 255, 0.04);
           margin-bottom: 6px;
+          cursor: pointer;
+        }
+
+        .notification-item--interactive:hover {
+          transform: translateY(-1px);
+          background: rgba(255, 255, 255, 0.08);
+        }
+
+        .home-page.theme-dark .notification-item {
+          background: linear-gradient(180deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.7));
+          border: 1px solid rgba(96, 165, 250, 0.1);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
         }
 
         .notification-title {
@@ -6756,9 +9423,18 @@ const HomePage = () => {
           margin-bottom: 4px;
         }
 
+        .home-page.theme-dark .notification-title {
+          color: #dbeafe;
+        }
+
         .notification-body {
           font-size: 0.75rem;
           opacity: 0.8;
+        }
+
+        .home-page.theme-dark .notification-body {
+          color: rgba(191, 219, 254, 0.8);
+          opacity: 1;
         }
 
         .notification-clear {
@@ -6766,6 +9442,98 @@ const HomePage = () => {
           border: none;
           color: rgba(255, 255, 255, 0.6);
           cursor: pointer;
+        }
+
+        .home-page.theme-dark .notification-clear {
+          color: rgba(147, 197, 253, 0.82);
+        }
+
+        .home-page.theme-dark .notification-clear:hover {
+          color: #eff6ff;
+        }
+
+        .detail-header {
+          position: relative;
+          overflow: hidden;
+          background: linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          padding: 30px;
+          border-radius: 24px;
+          margin-bottom: 30px;
+        }
+
+        .detail-header::after {
+          content: '';
+          position: absolute;
+          right: -64px;
+          bottom: -86px;
+          width: 200px;
+          height: 200px;
+          border-radius: 50%;
+          background: radial-gradient(circle, rgba(255, 255, 255, 0.08), transparent 68%);
+          pointer-events: none;
+        }
+
+        .detail-header--community {
+          background: linear-gradient(145deg, rgba(249, 115, 22, 0.15), rgba(255, 255, 255, 0.04) 42%, rgba(255, 255, 255, 0.02));
+        }
+
+        .detail-header--group {
+          background: linear-gradient(145deg, rgba(45, 212, 191, 0.15), rgba(255, 255, 255, 0.04) 42%, rgba(255, 255, 255, 0.02));
+        }
+
+        .detail-header-hero {
+          display: flex;
+          align-items: center;
+          gap: 20px;
+          margin-bottom: 18px;
+          position: relative;
+          z-index: 1;
+        }
+
+        .detail-header-copy {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          min-width: 0;
+          position: relative;
+          z-index: 1;
+        }
+
+        .detail-eyebrow {
+          align-self: flex-start;
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.78);
+          font-size: 0.68rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+
+        .detail-header h2 {
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: clamp(1.9rem, 2.6vw, 2.7rem);
+          font-weight: 800;
+          line-height: 0.98;
+          letter-spacing: -0.05em;
+          text-transform: none;
+        }
+
+        .detail-meta {
+          color: rgba(255, 255, 255, 0.64);
+          font-size: 0.95rem;
+          font-weight: 600;
+        }
+
+        .detail-description {
+          max-width: 720px;
+          color: rgba(255, 255, 255, 0.8);
+          line-height: 1.7;
+          position: relative;
+          z-index: 1;
         }
 
         .detail-tabs {
@@ -6780,16 +9548,20 @@ const HomePage = () => {
           border: 1px solid rgba(255, 255, 255, 0.1);
           color: rgba(255, 255, 255, 0.8);
           border-radius: 999px;
-          padding: 6px 12px;
+          padding: 9px 14px;
           cursor: pointer;
-          font-size: 0.75rem;
-          text-transform: lowercase;
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          transition: all 0.2s ease;
         }
 
         .detail-tab.active {
           background: rgba(59, 130, 246, 0.2);
           border-color: rgba(59, 130, 246, 0.4);
           color: white;
+          box-shadow: 0 8px 18px rgba(59, 130, 246, 0.18);
         }
 
         .member-panel,
@@ -6805,8 +9577,33 @@ const HomePage = () => {
           display: flex;
           justify-content: space-between;
           align-items: center;
+          gap: 12px;
           padding: 8px 0;
           border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .member-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+        }
+
+        .member-name {
+          font-weight: 600;
+          color: white;
+        }
+
+        .member-handle {
+          font-size: 0.78rem;
+          color: rgba(255, 255, 255, 0.55);
+        }
+
+        .member-actions {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          justify-content: flex-end;
         }
 
         .member-actions button {
@@ -6815,9 +9612,15 @@ const HomePage = () => {
           border: 1px solid rgba(255, 255, 255, 0.12);
           color: white;
           border-radius: 999px;
+          min-width: 36px;
+          min-height: 36px;
           padding: 4px 10px;
           font-size: 0.7rem;
           cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
         }
 
         .member-role {
@@ -6861,8 +9664,9 @@ const HomePage = () => {
         }
 
         .invite-join {
-          display: flex;
-          gap: 8px;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
           margin-bottom: 20px;
         }
 
@@ -6871,14 +9675,30 @@ const HomePage = () => {
           background: rgba(255, 255, 255, 0.05);
           border: 1px solid rgba(255, 255, 255, 0.1);
           color: white;
-          border-radius: 10px;
-          padding: 8px 12px;
+          border-radius: 14px;
+          padding: 12px 14px;
         }
 
         .create-group-inline {
           display: grid;
-          gap: 8px;
-          margin: 12px 0;
+          gap: 10px;
+          margin: 16px 0;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+
+        .member-add {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
+          align-items: center;
+          margin-bottom: 16px;
+        }
+
+        .member-helper-text {
+          margin-bottom: 14px;
+          color: rgba(255, 255, 255, 0.58);
+          font-size: 0.82rem;
+          line-height: 1.5;
         }
 
         .message-translate-btn {
@@ -7022,10 +9842,12 @@ const HomePage = () => {
         }
 
         .settings-header h3 {
+          font-family: var(--font-display, 'Syne', sans-serif);
           font-size: 1.5rem;
-          font-weight: 700;
+          font-weight: 800;
           color: white;
-          text-transform: lowercase;
+          text-transform: none;
+          letter-spacing: -0.04em;
         }
 
         .close-settings-btn {
@@ -7142,10 +9964,11 @@ const HomePage = () => {
           border-radius: 20px;
           width: 100%;
           max-width: 500px;
-          max-height: 80vh;
+          max-height: min(88vh, 760px);
           display: flex;
           flex-direction: column;
           animation: slideUp 0.3s ease;
+          overflow: hidden;
         }
 
         @keyframes slideUp {
@@ -7168,10 +9991,19 @@ const HomePage = () => {
         }
 
         .modal-header h3 {
-          font-size: 1.25rem;
-          font-weight: 700;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: 1.35rem;
+          font-weight: 800;
           color: white;
-          text-transform: lowercase;
+          text-transform: none;
+          letter-spacing: -0.04em;
+        }
+
+        .modal-subtitle {
+          margin-top: 6px;
+          color: rgba(226, 232, 240, 0.68);
+          font-size: 0.86rem;
+          line-height: 1.5;
         }
 
         .modal-actions {
@@ -7226,17 +10058,29 @@ const HomePage = () => {
           gap: 8px;
           padding: 12px 24px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          overflow-x: auto;
         }
 
         .chat-modal-tab {
-          padding: 8px 12px;
+          min-height: 38px;
+          padding: 8px 14px;
           border-radius: 999px;
           border: 1px solid rgba(255, 255, 255, 0.16);
           background: rgba(255, 255, 255, 0.04);
           color: rgba(255, 255, 255, 0.75);
           font-size: 0.78rem;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          white-space: nowrap;
           text-transform: lowercase;
           cursor: pointer;
+          transition: all 0.25s ease;
+        }
+
+        .chat-modal-tab:hover {
+          background: rgba(255, 255, 255, 0.08);
+          border-color: rgba(255, 255, 255, 0.22);
+          color: white;
         }
 
         .chat-modal-tab.active {
@@ -7294,6 +10138,18 @@ const HomePage = () => {
           font-size: 0.72rem;
           text-transform: lowercase;
           cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+        }
+
+        .request-btn--icon {
+          width: 38px;
+          min-width: 38px;
+          height: 38px;
+          padding: 0;
+          border-radius: 12px;
         }
 
         .request-btn.accept {
@@ -7356,6 +10212,121 @@ const HomePage = () => {
           border-color: rgba(255, 255, 255, 0.15);
         }
 
+        .chat-picker-modal {
+          max-width: 470px;
+          min-height: 320px;
+          max-height: min(82vh, 640px);
+          border-radius: 24px;
+          background:
+            linear-gradient(180deg, rgba(18, 18, 22, 0.98), rgba(10, 10, 12, 0.98));
+          box-shadow:
+            0 28px 80px rgba(0, 0, 0, 0.55),
+            inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .chat-picker-modal .modal-header {
+          padding: 22px 22px 16px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .chat-picker-modal .modal-header h3 {
+          font-size: 1.9rem;
+          line-height: 1;
+          letter-spacing: -0.06em;
+        }
+
+        .chat-picker-modal .modal-actions {
+          gap: 10px;
+        }
+
+        .chat-picker-modal .modal-icon-btn {
+          width: 38px;
+          height: 38px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.05);
+          border-color: rgba(255, 255, 255, 0.09);
+        }
+
+        .chat-picker-modal .chat-modal-tabs {
+          padding: 14px 20px 10px;
+          border-bottom: none;
+          gap: 10px;
+        }
+
+        .chat-picker-modal .modal-search {
+          margin: 0 20px 12px;
+          padding: 0 14px;
+          min-height: 54px;
+          border-radius: 16px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: rgba(255, 255, 255, 0.03);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+        }
+
+        .chat-picker-modal .modal-search:focus-within {
+          border-color: rgba(59, 130, 246, 0.45);
+          box-shadow:
+            0 0 0 3px rgba(59, 130, 246, 0.12),
+            inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        .chat-picker-modal .modal-search-input {
+          min-width: 0;
+          font-size: 0.95rem;
+        }
+
+        .chat-picker-modal .chat-action-error {
+          margin: 0 20px 12px;
+        }
+
+        .chat-picker-modal .group-name-input {
+          padding: 0 20px 12px;
+          border-bottom: none;
+        }
+
+        .chat-picker-modal .selected-users-count {
+          margin: 0 20px 10px;
+          padding: 12px 14px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: rgba(255, 255, 255, 0.03);
+          border-radius: 14px;
+          color: rgba(255, 255, 255, 0.68);
+        }
+
+        .chat-picker-modal .modal-users-list {
+          margin: 0 12px 12px;
+          padding: 8px;
+          min-height: 180px;
+          border-radius: 18px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .chat-picker-modal .modal-user-item {
+          border-radius: 16px;
+        }
+
+        .chat-picker-modal .modal-user-item + .modal-user-item {
+          margin-top: 6px;
+        }
+
+        .chat-picker-modal .create-group-btn {
+          margin: 0 20px 20px;
+          width: calc(100% - 40px);
+        }
+
+        .chat-modal-empty {
+          min-height: 150px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          border-radius: 16px;
+          border: 1px dashed rgba(255, 255, 255, 0.09);
+          background: rgba(255, 255, 255, 0.018);
+          color: rgba(255, 255, 255, 0.52);
+        }
+
         .modal-user-avatar {
           width: 44px;
           height: 44px;
@@ -7369,6 +10340,7 @@ const HomePage = () => {
           font-weight: 700;
           color: white;
           flex-shrink: 0;
+          overflow: hidden;
         }
 
         .avatar-img {
@@ -7384,10 +10356,11 @@ const HomePage = () => {
         }
 
         .modal-user-info h4 {
-          font-size: 0.9375rem;
-          font-weight: 600;
+          font-size: 0.98rem;
+          font-weight: 700;
           color: white;
           margin-bottom: 4px;
+          letter-spacing: -0.02em;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -7399,6 +10372,117 @@ const HomePage = () => {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+        }
+
+        .modal-user-meta {
+          margin-top: 4px;
+          white-space: normal;
+          line-height: 1.4;
+        }
+
+        .profile-preview-modal {
+          max-width: 560px;
+          max-height: min(84vh, 720px);
+        }
+
+        .profile-preview-card {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 12px;
+          padding: 12px 22px 22px;
+          overflow-y: auto;
+        }
+
+        .profile-preview-avatar {
+          width: 92px;
+          height: 92px;
+          border-radius: 50%;
+          background: rgba(255, 255, 255, 0.08);
+          border: 2px solid rgba(255, 255, 255, 0.12);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 2rem;
+          font-weight: 700;
+          color: white;
+          overflow: hidden;
+        }
+
+        .profile-preview-handle {
+          color: rgba(255, 255, 255, 0.6);
+          margin-top: -6px;
+        }
+
+        .profile-preview-pill {
+          border-radius: 999px;
+          padding: 6px 12px;
+          background: rgba(56, 189, 248, 0.12);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          color: #7dd3fc;
+          font-size: 0.78rem;
+          text-transform: capitalize;
+        }
+
+        .profile-preview-bio {
+          max-width: 420px;
+          color: rgba(255, 255, 255, 0.82);
+          line-height: 1.6;
+        }
+
+        .profile-preview-grid {
+          width: 100%;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 6px;
+        }
+
+        .profile-preview-section {
+          text-align: left;
+          min-width: 0;
+          padding: 14px;
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.045);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+        }
+
+        .profile-preview-section--full {
+          grid-column: 1 / -1;
+        }
+
+        .profile-preview-label {
+          display: block;
+          margin-bottom: 6px;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: rgba(255, 255, 255, 0.45);
+        }
+
+        .profile-preview-section p {
+          color: rgba(255, 255, 255, 0.88);
+          line-height: 1.5;
+          word-break: break-word;
+        }
+
+        .profile-preview-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          justify-content: flex-start;
+          margin-top: 2px;
+        }
+
+        .profile-preview-tag {
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.78);
+          font-size: 0.78rem;
         }
 
         .selected-check {
@@ -7423,11 +10507,41 @@ const HomePage = () => {
         }
 
         .group-name-input {
+          width: 100%;
+          min-width: 0;
           padding: 16px 24px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
 
+        .event-modal {
+          max-width: 580px;
+          max-height: min(88vh, 760px);
+        }
+
+        .event-form {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 20px 24px 24px;
+          overflow-y: auto;
+        }
+
+        .event-form .group-name-input {
+          padding: 0;
+          border-bottom: none;
+        }
+
+        .event-form .chat-action-error {
+          margin: 0;
+        }
+
+        .event-form .create-group-btn {
+          margin-top: 8px;
+        }
+
         .modal-input {
+          box-sizing: border-box;
+          max-width: 100%;
           width: 100%;
           background: rgba(255, 255, 255, 0.04);
           border: 1px solid rgba(255, 255, 255, 0.08);
@@ -7446,6 +10560,15 @@ const HomePage = () => {
         .modal-input:focus {
           background: rgba(255, 255, 255, 0.06);
           border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        textarea.modal-input {
+          min-height: 112px;
+          resize: vertical;
+        }
+
+        input[type="file"].modal-input {
+          padding: 12px 14px;
         }
 
         .onboarding-modal {
@@ -7472,6 +10595,8 @@ const HomePage = () => {
 
         .create-group-btn {
           margin-top: 16px;
+          box-sizing: border-box;
+          max-width: 100%;
           width: 100%;
           background: rgba(255, 255, 255, 0.12);
           border: 1px solid rgba(255, 255, 255, 0.15);
@@ -7540,7 +10665,7 @@ const HomePage = () => {
           }
 
           .communities-grid {
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 16px;
           }
 
@@ -7724,9 +10849,11 @@ const HomePage = () => {
         }
 
         .chat-window-info h3 {
-          font-size: 1rem;
-          font-weight: 600;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          font-size: 1.12rem;
+          font-weight: 700;
           color: white;
+          letter-spacing: -0.03em;
         }
 
         .messages-container {
@@ -7844,10 +10971,21 @@ const HomePage = () => {
 
         /* Message Status & Unread Badge */
         .message-status {
-          font-size: 0.7rem;
           display: flex;
           align-items: center;
           margin-left: 4px;
+          font-size: 0;
+          line-height: 1;
+        }
+
+        .message-status::before {
+          content: '\\2713';
+          font-size: 0.7rem;
+        }
+
+        .status-delivered::before,
+        .status-read::before {
+          content: '\\2713\\2713';
         }
 
         .status-sent { color: rgba(255, 255, 255, 0.4); }
@@ -7993,6 +11131,8 @@ const HomePage = () => {
           top: calc(100% + 8px);
           left: 0;
           right: 0;
+          display: grid;
+          gap: 4px;
           background: rgba(20, 20, 25, 0.95);
           backdrop-filter: blur(20px);
           border: 1px solid rgba(255, 255, 255, 0.1);
@@ -8000,6 +11140,7 @@ const HomePage = () => {
           padding: 8px;
           max-height: 240px;
           overflow-y: auto;
+          overflow-x: hidden;
           box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
           z-index: 20;
           animation: dropdownFade 0.2s ease;
@@ -8400,6 +11541,198 @@ const HomePage = () => {
           background: rgba(255, 255, 255, 0.14);
         }
 
+        .chat-action-btn:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+        }
+
+        .call-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 1200;
+          background: rgba(2, 6, 23, 0.78);
+          backdrop-filter: blur(20px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+        }
+
+        .call-panel {
+          width: min(100%, 960px);
+          border-radius: 28px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background:
+            radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 42%),
+            linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(3, 7, 18, 0.96));
+          box-shadow: 0 32px 80px rgba(2, 6, 23, 0.6);
+          padding: 22px;
+          display: flex;
+          flex-direction: column;
+          gap: 18px;
+        }
+
+        .call-panel-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+        }
+
+        .call-panel-header h3 {
+          font-size: 1.5rem;
+          font-family: var(--font-display, 'Syne', sans-serif);
+          color: white;
+          letter-spacing: -0.03em;
+        }
+
+        .call-panel-eyebrow {
+          margin-bottom: 6px;
+          font-size: 0.72rem;
+          text-transform: uppercase;
+          letter-spacing: 0.18em;
+          color: rgba(148, 163, 184, 0.8);
+        }
+
+        .call-close-btn {
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: white;
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+
+        .call-stage {
+          position: relative;
+          min-height: 420px;
+          border-radius: 24px;
+          overflow: hidden;
+          background: rgba(15, 23, 42, 0.78);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .call-remote-video-shell {
+          position: relative;
+          min-height: 420px;
+          height: 100%;
+          background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.88));
+        }
+
+        .call-remote-video,
+        .call-local-video {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          background: rgba(15, 23, 42, 0.92);
+        }
+
+        .call-video-placeholder,
+        .call-local-video-off {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          color: rgba(226, 232, 240, 0.92);
+          text-align: center;
+          padding: 24px;
+        }
+
+        .call-avatar-fallback {
+          width: 76px;
+          height: 76px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, rgba(56, 189, 248, 0.28), rgba(14, 165, 233, 0.5));
+          border: 1px solid rgba(125, 211, 252, 0.42);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.8rem;
+          font-weight: 700;
+          color: white;
+        }
+
+        .call-local-video-shell {
+          position: absolute;
+          right: 18px;
+          bottom: 18px;
+          width: min(240px, 34%);
+          aspect-ratio: 4 / 3;
+          border-radius: 18px;
+          overflow: hidden;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          box-shadow: 0 16px 36px rgba(2, 6, 23, 0.48);
+          background: rgba(15, 23, 42, 0.95);
+        }
+
+        .call-local-video-off {
+          background: rgba(15, 23, 42, 0.86);
+          font-size: 0.82rem;
+        }
+
+        .call-error-text {
+          color: #fca5a5;
+          font-size: 0.88rem;
+          margin-top: -4px;
+        }
+
+        .call-controls {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+        }
+
+        .call-control-btn {
+          min-width: 128px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(255, 255, 255, 0.08);
+          color: white;
+          border-radius: 16px;
+          padding: 12px 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          font-size: 0.92rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+        }
+
+        .call-control-btn:hover {
+          transform: translateY(-1px);
+          background: rgba(255, 255, 255, 0.12);
+        }
+
+        .call-control-btn:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .call-control-btn--accept {
+          background: rgba(34, 197, 94, 0.18);
+          border-color: rgba(74, 222, 128, 0.42);
+          color: #bbf7d0;
+        }
+
+        .call-control-btn--ghost,
+        .call-control-btn--danger,
+        .call-control-btn--off {
+          background: rgba(239, 68, 68, 0.14);
+          border-color: rgba(248, 113, 113, 0.36);
+          color: #fecaca;
+        }
+
         .scheduled-panel {
           margin: 10px 0 0;
           padding: 12px;
@@ -8478,8 +11811,14 @@ const HomePage = () => {
           color: white;
           padding: 4px 6px;
           border-radius: 8px;
-          font-size: 0.85rem;
+          font-size: 0;
           cursor: pointer;
+        }
+
+        .message-react-btn::before {
+          content: '\\1F642';
+          font-size: 0.9rem;
+          line-height: 1;
         }
 
         .reaction-picker {
@@ -8554,6 +11893,7 @@ const HomePage = () => {
         .settings-content {
           height: auto;
           gap: 16px;
+          overflow-y: auto;
         }
 
         .profile-upload-section {
@@ -8601,7 +11941,9 @@ const HomePage = () => {
         }
 
         .settings-form .form-group {
-          margin-bottom: 14px;
+          width: 100%;
+          min-width: 0;
+          margin-bottom: 0;
         }
 
         .settings-form .form-group label {
@@ -8613,6 +11955,14 @@ const HomePage = () => {
 
         .settings-form .modal-input {
           width: 100%;
+        }
+
+        .settings-form {
+          width: 100%;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
         }
 
         .settings-preference {
@@ -8680,6 +12030,34 @@ const HomePage = () => {
           gap: 10px;
         }
 
+        .home-page,
+        .home-page * {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(0, 0, 0, 0.46) transparent;
+        }
+
+        .home-page *::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+
+        .home-page *::-webkit-scrollbar-track {
+          background: transparent;
+        }
+
+        .home-page *::-webkit-scrollbar-thumb {
+          background: rgba(0, 0, 0, 0.46);
+          border-radius: 999px;
+          border: 2px solid transparent;
+          background-clip: padding-box;
+        }
+
+        .home-page *::-webkit-scrollbar-thumb:hover {
+          background: rgba(0, 0, 0, 0.62);
+          border: 2px solid transparent;
+          background-clip: padding-box;
+        }
+
         @media (max-width: 980px) {
           .settings-page-grid {
             grid-template-columns: 1fr;
@@ -8687,6 +12065,94 @@ const HomePage = () => {
         }
 
         @media (max-width: 720px) {
+          .call-overlay {
+            padding: 14px;
+          }
+
+          .call-panel {
+            padding: 16px;
+            border-radius: 20px;
+          }
+
+          .call-stage,
+          .call-remote-video-shell {
+            min-height: 300px;
+          }
+
+          .call-local-video-shell {
+            width: 110px;
+            right: 12px;
+            bottom: 12px;
+            border-radius: 14px;
+          }
+
+          .call-control-btn {
+            flex: 1 1 100%;
+            min-width: 0;
+          }
+
+          .chat-picker-modal {
+            max-width: 100%;
+            min-height: 0;
+            max-height: min(86vh, 620px);
+          }
+
+          .chat-picker-modal .modal-header {
+            padding: 20px 18px 14px;
+          }
+
+          .chat-picker-modal .modal-header h3 {
+            font-size: 1.55rem;
+          }
+
+          .chat-picker-modal .chat-modal-tabs,
+          .chat-picker-modal .group-name-input {
+            padding-left: 18px;
+            padding-right: 18px;
+          }
+
+          .chat-picker-modal .modal-search,
+          .chat-picker-modal .chat-action-error,
+          .chat-picker-modal .selected-users-count {
+            margin-left: 18px;
+            margin-right: 18px;
+          }
+
+          .chat-picker-modal .create-group-btn {
+            width: calc(100% - 36px);
+            margin: 0 18px 18px;
+          }
+
+          .event-form {
+            padding: 18px 18px 20px;
+          }
+
+          .profile-preview-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .detail-header {
+            padding: 24px 20px;
+          }
+
+          .detail-header-hero {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .invite-join,
+          .member-add {
+            grid-template-columns: 1fr;
+          }
+
+          .create-group-inline {
+            grid-template-columns: 1fr;
+          }
+
+          .communities-grid {
+            grid-template-columns: 1fr;
+          }
+
           .ai-translate-bar {
             flex-direction: column;
             align-items: stretch;
@@ -8720,3 +12186,8 @@ const HomePage = () => {
 };
 
 export default HomePage;
+
+
+
+
+

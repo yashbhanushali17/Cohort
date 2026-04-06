@@ -17,7 +17,7 @@ export const updateUserProfile = async (formData) => {
         });
         return response.data;
     } catch (error) {
-        console.error('Error updating profile:', error);
+        console.error('Error updating profile:', error.response?.data || error);
         throw error;
     }
 };

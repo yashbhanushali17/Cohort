@@ -14,6 +14,9 @@ const eventSchema = new mongoose.Schema({
         type: Date,
         required: true
     },
+    endDate: {
+        type: Date
+    },
     location: {
         type: String,
         default: 'Online'
@@ -42,7 +45,33 @@ const eventSchema = new mongoose.Schema({
     attendees: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
-    }]
+    }],
+    isExpired: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    expiredAt: {
+        type: Date,
+        default: null
+    }
 }, { timestamps: true });
+
+eventSchema.pre('validate', function () {
+    if (this.date && !this.endDate) {
+        this.endDate = this.date;
+    }
+
+    if (this.date && this.endDate && this.endDate < this.date) {
+        throw new Error('End date must be after the start date.');
+    }
+
+    const effectiveEndDate = this.endDate || this.date;
+    if (effectiveEndDate instanceof Date && !Number.isNaN(effectiveEndDate.getTime())) {
+        const expired = effectiveEndDate <= new Date();
+        this.isExpired = expired;
+        this.expiredAt = expired ? (this.expiredAt || new Date()) : null;
+    }
+});
 
 export default mongoose.model('Event', eventSchema);

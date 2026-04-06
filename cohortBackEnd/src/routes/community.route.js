@@ -9,7 +9,16 @@ import Message from '../models/message-model.js';
 
 const router = express.Router();
 
-const toId = (value) => value?.toString();
+const toId = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value?.toHexString === 'function') return value.toHexString();
+    if (typeof value === 'object') {
+        if (value._id && value._id !== value) return toId(value._id);
+        if (value.id) return String(value.id);
+    }
+    return String(value);
+};
 
 const generateInviteCode = () => crypto.randomBytes(6).toString('hex');
 
@@ -34,7 +43,32 @@ const isCommunityMember = (community, userId) => {
     return (community.members || []).some((memberId) => toId(memberId) === id);
 };
 
-const populateCommunity = (query) => (
+const buildRelevantCommunityQuery = (userId) => ({
+    $or: [
+        { creator: userId },
+        { admins: userId },
+        { members: userId },
+        { joinRequests: userId }
+    ]
+});
+
+const canAccessCommunity = (community, userId) => {
+    if (!community) return false;
+    return (
+        isCommunityMember(community, userId)
+        || isCommunityAdmin(community, userId)
+        || (community.joinRequests || []).some((id) => toId(id) === toId(userId))
+    );
+};
+
+const populateCommunityList = (query) => (
+    query
+        .populate('members', 'name username profilePic')
+        .populate('admins', 'name username profilePic')
+        .populate('creator', 'name username profilePic')
+);
+
+const populateCommunityDetail = (query) => (
     query
         .populate('members', 'name username profilePic')
         .populate('admins', 'name username profilePic')
@@ -80,8 +114,9 @@ const ensureAdminSeed = async (community) => {
 // GET all communities
 router.get('/', protect, async (req, res) => {
     try {
-        const communities = await populateCommunity(
-            Community.find().sort({ members: -1 })
+        const relevantQuery = buildRelevantCommunityQuery(req.user._id);
+        const communities = await populateCommunityList(
+            Community.find(relevantQuery).sort({ members: -1 })
         );
 
         const userId = toId(req.user._id);
@@ -112,8 +147,12 @@ router.get('/:id', protect, async (req, res) => {
             return res.status(400).json({ message: 'Invalid community id' });
         }
 
-        const community = await populateCommunity(Community.findById(req.params.id));
+        const community = await populateCommunityDetail(Community.findById(req.params.id));
         if (!community) return res.status(404).json({ message: 'Community not found' });
+
+        if (!canAccessCommunity(community, req.user._id)) {
+            return res.status(403).json({ message: 'Community is only visible in your relevant spaces.' });
+        }
 
         await ensureAdminSeed(community);
         await ensureAnnouncementChat(community);
@@ -179,7 +218,7 @@ router.post('/', protect, async (req, res) => {
         community.announcementChat = chat._id;
         await community.save();
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.status(201).json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -214,7 +253,7 @@ router.put('/:id', protect, async (req, res) => {
                 name: `${community.name} Announcements`
             });
         }
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -257,7 +296,7 @@ router.post('/:id/join', protect, async (req, res) => {
         await ensureAnnouncementChat(community);
 
         if (isCommunityMember(community, req.user._id)) {
-            const populated = await populateCommunity(Community.findById(community._id));
+            const populated = await populateCommunityDetail(Community.findById(community._id));
             return res.json(populated);
         }
 
@@ -279,7 +318,7 @@ router.post('/:id/join', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -295,7 +334,7 @@ router.post('/invite/:code/join', protect, async (req, res) => {
         await ensureAnnouncementChat(community);
 
         if (isCommunityMember(community, req.user._id)) {
-            const populated = await populateCommunity(Community.findById(community._id));
+            const populated = await populateCommunityDetail(Community.findById(community._id));
             return res.json(populated);
         }
 
@@ -316,7 +355,7 @@ router.post('/invite/:code/join', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -409,7 +448,7 @@ router.post('/:id/groups', protect, async (req, res) => {
             await community.save();
         }
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -470,7 +509,7 @@ router.post('/:id/groups/create', protect, async (req, res) => {
         community.groups.push(group._id);
         await community.save();
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.status(201).json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -498,7 +537,7 @@ router.post('/:id/admins/promote', protect, async (req, res) => {
             await community.save();
         }
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -523,7 +562,7 @@ router.post('/:id/admins/demote', protect, async (req, res) => {
         community.admins = (community.admins || []).filter((id) => toId(id) !== toId(memberId));
         await community.save();
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -556,7 +595,7 @@ router.post('/:id/join-requests/:userId/approve', protect, async (req, res) => {
             });
         }
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -579,7 +618,7 @@ router.post('/:id/join-requests/:userId/reject', protect, async (req, res) => {
         );
         await community.save();
 
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
@@ -603,7 +642,7 @@ router.post('/:id/settings', protect, async (req, res) => {
         };
 
         await community.save();
-        const populated = await populateCommunity(Community.findById(community._id));
+        const populated = await populateCommunityDetail(Community.findById(community._id));
         res.json(populated);
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });

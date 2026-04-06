@@ -57,6 +57,7 @@ const groupSchema = new mongoose.Schema({
     }],
     settings: {
         adminsOnly: { type: Boolean, default: false },
+        onlyAdminsInvite: { type: Boolean, default: false },
         requireApproval: { type: Boolean, default: false }
     },
     pinnedMessages: [{
